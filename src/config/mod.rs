@@ -8,6 +8,23 @@ use std::path::PathBuf;
 pub struct Config {
     pub general: GeneralConfig,
     pub timer: TimerConfig,
+    pub todoist: TodoistConfig,
+    pub calendar: CalendarConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TodoistConfig {
+    pub api_token: String,
+    pub comment_on_complete: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CalendarConfig {
+    pub enabled: bool,
+    pub ics_path: String,
+    pub auto_export: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,6 +52,28 @@ impl Default for Config {
         Self {
             general: GeneralConfig::default(),
             timer: TimerConfig::default(),
+            todoist: TodoistConfig::default(),
+            calendar: CalendarConfig::default(),
+        }
+    }
+}
+
+impl Default for TodoistConfig {
+    fn default() -> Self {
+        Self {
+            api_token: String::new(),
+            comment_on_complete: true,
+        }
+    }
+}
+
+impl Default for CalendarConfig {
+    fn default() -> Self {
+        let default_path = Config::data_dir_static().join("sesh.ics");
+        Self {
+            enabled: false,
+            ics_path: default_path.to_string_lossy().to_string(),
+            auto_export: true,
         }
     }
 }
@@ -85,6 +124,10 @@ impl Config {
     }
 
     pub fn data_dir() -> PathBuf {
+        Self::data_dir_static()
+    }
+
+    pub fn data_dir_static() -> PathBuf {
         if let Some(proj_dirs) = directories::ProjectDirs::from("", "", "sesh") {
             proj_dirs.data_dir().to_path_buf()
         } else {

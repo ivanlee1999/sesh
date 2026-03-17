@@ -85,6 +85,54 @@ sesh history -l 20       # Last 20 sessions
 sesh analytics           # Today's analytics
 ```
 
+### Todoist Integration
+
+Link your Pomodoro sessions to Todoist tasks:
+
+```bash
+# List today's Todoist tasks
+sesh todoist
+
+# Start a session linked to a Todoist task
+sesh start --todoist <task_id>
+
+# The intention is auto-populated from the task content,
+# and the category is auto-matched from the Todoist project name.
+```
+
+Setup: add your API token to the config file (get it at https://todoist.com/prefs/integrations):
+
+```toml
+[todoist]
+api_token = "your-api-token-here"
+comment_on_complete = true
+```
+
+### Calendar Sync (ICS Export)
+
+Export completed sessions as calendar events:
+
+```bash
+# Export all sessions to ICS file
+sesh export --format ics
+
+# Export to a specific path
+sesh export --format ics --output ~/calendar/sesh.ics
+
+# Export as JSON or CSV
+sesh export --format json
+sesh export --format csv --output ~/sessions.csv
+```
+
+For auto-sync, enable in config — sessions are written to the ICS file automatically after each completion. Subscribe to this file from Google Calendar, Outlook, or any CalDAV client.
+
+```toml
+[calendar]
+enabled = true
+ics_path = "~/.local/share/sesh/sesh.ics"
+auto_export = true
+```
+
 ## Configuration
 
 Config file: `~/.config/sesh/config.toml`
@@ -99,6 +147,15 @@ focus_duration = 25        # minutes
 short_break_duration = 5   # minutes
 long_break_duration = 20   # minutes
 long_break_after = 100     # cumulative minutes before long break
+
+[todoist]
+api_token = ""             # Todoist API token
+comment_on_complete = true # Add comment to task after session
+
+[calendar]
+enabled = false            # Enable auto ICS export
+ics_path = "~/.local/share/sesh/sesh.ics"
+auto_export = true         # Write ICS after each session
 ```
 
 ## Data

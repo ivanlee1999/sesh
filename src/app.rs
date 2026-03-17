@@ -238,6 +238,9 @@ impl App {
 
             let cat_id = self.categories.get(self.selected_category_idx).map(|c| c.id.as_str());
 
+            let started_str = started.format("%Y-%m-%dT%H:%M:%S").to_string();
+            let ended_str = now.format("%Y-%m-%dT%H:%M:%S").to_string();
+
             let _ = self.db.save_session(
                 &self.intention,
                 cat_id,
@@ -246,10 +249,33 @@ impl App {
                 actual_secs,
                 pause_secs,
                 overflow_secs,
-                &started.format("%Y-%m-%dT%H:%M:%S").to_string(),
-                &now.format("%Y-%m-%dT%H:%M:%S").to_string(),
+                &started_str,
+                &ended_str,
                 None,
             );
+
+            // Auto-export to ICS if enabled
+            if self.config.calendar.enabled && self.config.calendar.auto_export {
+                let cat_title = self.categories.get(self.selected_category_idx).map(|c| c.title.clone());
+                let cat_color = self.categories.get(self.selected_category_idx).map(|c| c.hex_color.clone());
+                let record = crate::db::sessions::SessionRecord {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    title: self.intention.clone(),
+                    category_id: cat_id.map(|s| s.to_string()),
+                    category_title: cat_title,
+                    category_color: cat_color,
+                    session_type: session_type.to_string(),
+                    target_seconds: target_secs,
+                    actual_seconds: actual_secs,
+                    pause_seconds: pause_secs,
+                    overflow_seconds: overflow_secs,
+                    started_at: started_str,
+                    ended_at: ended_str,
+                    notes: None,
+                };
+                let ics_path = std::path::PathBuf::from(&self.config.calendar.ics_path);
+                let _ = crate::calendar::auto_export_session(&record, &ics_path);
+            }
 
             self.cumulative_focus += Duration::from_secs(actual_secs.max(0) as u64);
             self.refresh_stats();

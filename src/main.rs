@@ -1,8 +1,10 @@
 mod app;
+mod calendar;
 mod cli;
 mod config;
 mod db;
 mod state;
+mod todoist;
 mod ui;
 
 use app::{App, InputMode, Screen};

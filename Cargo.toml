@@ -25,6 +25,9 @@ serde_json = "1"
 # CLI
 clap = { version = "4", features = ["derive"] }
 
+# HTTP (for Todoist API)
+ureq = { version = "2", features = ["json"] }
+
 # Misc
 directories = "5"
 uuid = { version = "1", features = ["v4", "serde"] }
