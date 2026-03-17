@@ -27,6 +27,8 @@ const (
 	ModeNormal InputMode = iota
 	ModeIntention
 	ModeCategory
+	ModeSessionComplete // notes input after timer hits 0
+	ModeSessionPost     // after saving: b/enter/q
 )
 
 type tickMsg time.Time
@@ -57,13 +59,22 @@ type Model struct {
 	CatScrollOffset int
 
 	// History
-	HistorySelected int
+	HistorySelected    int
+	HistoryScrollOffset int
+	HistorySessions    []db.SessionRecord
 
 	// Analytics
-	TodayFocusMins  float64
-	TodaySessions   int64
-	Streak          int64
-	CatBreakdown    []db.CategoryBreakdown
+	TodayFocusMins float64
+	TodaySessions  int64
+	Streak         int64
+	CatBreakdown   []db.CategoryBreakdown
+	Last7Days      []db.DayFocus
+	TotalFocusMins float64
+
+	// Session completion
+	CompletionNotes    string
+	CompletionDuration time.Duration
+	CompletedAt        time.Time
 
 	// DB
 	DB *db.Database
@@ -83,22 +94,27 @@ func NewModel(database *db.Database, cfg config.Config) Model {
 	focusMins, sessions, _ := database.GetTodayStats()
 	streak := database.GetStreak()
 	breakdown, _ := database.GetCategoryBreakdownToday()
+	last7, _ := database.GetLast7DaysFocus()
+	historySessions, _ := database.GetSessions(200)
 
 	return Model{
-		Timer:            state.NewIdle(),
-		Screen:           ScreenTimer,
-		InputMode:        ModeNormal,
-		Config:           cfg,
+		Timer:             state.NewIdle(),
+		Screen:            ScreenTimer,
+		InputMode:         ModeNormal,
+		Config:            cfg,
 		FocusDurationMins: cfg.Timer.FocusDuration,
-		TargetDuration:   time.Duration(cfg.Timer.FocusDuration) * time.Minute,
-		Categories:       cats,
-		TodayFocusMins:   focusMins,
-		TodaySessions:    sessions,
-		Streak:           streak,
-		CatBreakdown:     breakdown,
-		DB:               database,
-		Width:            80,
-		Height:           24,
+		TargetDuration:    time.Duration(cfg.Timer.FocusDuration) * time.Minute,
+		Categories:        cats,
+		TodayFocusMins:    focusMins,
+		TodaySessions:     sessions,
+		Streak:            streak,
+		CatBreakdown:      breakdown,
+		Last7Days:         last7,
+		TotalFocusMins:    database.GetTotalFocusAllTime(),
+		HistorySessions:   historySessions,
+		DB:                database,
+		Width:             80,
+		Height:            24,
 	}
 }
 
@@ -124,13 +140,28 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 }
 
 func (m *Model) tick() {
+	if m.InputMode == ModeSessionComplete || m.InputMode == ModeSessionPost {
+		return
+	}
 	d := time.Duration(m.Config.General.TickRateMs) * time.Millisecond
 	switch m.Timer.Phase {
 	case state.PhaseFocus:
 		if m.Timer.Remaining <= d {
+			now := time.Now()
+			totalElapsed := now.Sub(m.StartedAtChrono)
+			actual := totalElapsed - m.PauseAccum
+			if actual < 0 {
+				actual = 0
+			}
+			m.CompletionDuration = actual
+			m.CompletedAt = now
+			m.CompletionNotes = ""
+			m.InputMode = ModeSessionComplete
+			fmt.Print("\a")
 			m.Timer.Phase = state.PhaseOverflow
 			m.Timer.Elapsed = 0
 			m.Timer.TargetWas = m.Timer.Target
+			m.Timer.Remaining = 0
 		} else {
 			m.Timer.Remaining -= d
 		}
@@ -160,6 +191,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	if m.InputMode == ModeCategory {
 		return m.handleCategoryKey(msg)
 	}
+	if m.InputMode == ModeSessionComplete {
+		return m.handleSessionCompleteKey(msg)
+	}
+	if m.InputMode == ModeSessionPost {
+		return m.handleSessionPostKey(msg)
+	}
 
 	key := msg.String()
 
@@ -182,6 +219,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.refreshStats()
 		m.Screen = ScreenAnalytics
 	case "3":
+		m.refreshHistory()
 		m.Screen = ScreenHistory
 	case "4":
 		m.Screen = ScreenSettings
@@ -189,6 +227,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.Screen = (m.Screen + 1) % 4
 		if m.Screen == ScreenAnalytics {
 			m.refreshStats()
+		}
+		if m.Screen == ScreenHistory {
+			m.refreshHistory()
 		}
 	}
 
@@ -325,13 +366,26 @@ func (m Model) handleTimerKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 }
 
 func (m Model) handleHistoryKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	n := len(m.HistorySessions)
+	visibleRows := m.Height - 8
+	if visibleRows < 5 {
+		visibleRows = 5
+	}
 	switch msg.String() {
 	case "up", "k":
 		if m.HistorySelected > 0 {
 			m.HistorySelected--
+			if m.HistorySelected < m.HistoryScrollOffset {
+				m.HistoryScrollOffset = m.HistorySelected
+			}
 		}
 	case "down", "j":
-		m.HistorySelected++
+		if m.HistorySelected < n-1 {
+			m.HistorySelected++
+			if m.HistorySelected >= m.HistoryScrollOffset+visibleRows {
+				m.HistoryScrollOffset = m.HistorySelected - visibleRows + 1
+			}
+		}
 	}
 	return m, nil
 }
@@ -434,6 +488,97 @@ func (m *Model) finishSession() {
 	m.StartedAtChrono = time.Time{}
 }
 
+func (m Model) handleSessionCompleteKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		m.Quitting = true
+		return m, tea.Quit
+	case "esc":
+		m.InputMode = ModeNormal
+		m.Timer = state.NewIdle()
+		m.StartedAtChrono = time.Time{}
+	case "enter":
+		m.saveCompletedSession()
+		m.InputMode = ModeSessionPost
+	case "backspace":
+		if len(m.CompletionNotes) > 0 {
+			runes := []rune(m.CompletionNotes)
+			m.CompletionNotes = string(runes[:len(runes)-1])
+		}
+	default:
+		if msg.Type == tea.KeyRunes {
+			m.CompletionNotes += string(msg.Runes)
+		}
+	}
+	return m, nil
+}
+
+func (m Model) handleSessionPostKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		m.Quitting = true
+		return m, tea.Quit
+	case "b":
+		m.InputMode = ModeNormal
+		m.StartedAtChrono = time.Time{}
+		m.startBreak(state.BreakShort)
+	case "enter":
+		m.InputMode = ModeNormal
+		m.Timer = state.NewIdle()
+		m.StartedAtChrono = time.Time{}
+	case "q":
+		m.Quitting = true
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m *Model) saveCompletedSession() {
+	actualSecs := int64(m.CompletionDuration.Seconds())
+	targetSecs := int64(m.TargetDuration.Seconds())
+	pauseSecs := int64(m.PauseAccum.Seconds())
+
+	sessionType := "full_focus"
+	if actualSecs < targetSecs {
+		sessionType = "partial_focus"
+	}
+
+	var catID *string
+	var catTitle, catColor *string
+	if m.CatIdx < len(m.Categories) {
+		catID = &m.Categories[m.CatIdx].ID
+		catTitle = &m.Categories[m.CatIdx].Title
+		catColor = &m.Categories[m.CatIdx].HexColor
+	}
+
+	startedStr := m.StartedAtChrono.Format("2006-01-02T15:04:05")
+	endedStr := m.CompletedAt.Format("2006-01-02T15:04:05")
+
+	var notesPtr *string
+	if m.CompletionNotes != "" {
+		notesPtr = &m.CompletionNotes
+	}
+
+	m.DB.SaveSession(m.Intention, catID, sessionType, targetSecs, actualSecs, pauseSecs, 0, startedStr, endedStr, notesPtr)
+
+	if m.Config.Calendar.Enabled && m.Config.Calendar.AutoExport {
+		rec := db.SessionRecord{
+			ID: "auto", Title: m.Intention,
+			CategoryID: catID, CategoryTitle: catTitle, CategoryColor: catColor,
+			SessionType: sessionType, TargetSeconds: targetSecs,
+			ActualSeconds: actualSecs, PauseSeconds: pauseSecs,
+			StartedAt: startedStr, EndedAt: endedStr,
+		}
+		calendar.AutoExportSession(&rec, m.Config.Calendar.ICSPath)
+	}
+
+	if actualSecs > 0 {
+		m.CumulativeFocus += time.Duration(actualSecs) * time.Second
+	}
+	m.refreshStats()
+	m.refreshHistory()
+}
+
 func (m *Model) abandonSession() {
 	prev := m.Timer
 	m.Timer = state.TimerState{
@@ -470,6 +615,15 @@ func (m *Model) refreshStats() {
 	if b, err := m.DB.GetCategoryBreakdownToday(); err == nil {
 		m.CatBreakdown = b
 	}
+	if days, err := m.DB.GetLast7DaysFocus(); err == nil {
+		m.Last7Days = days
+	}
+	m.TotalFocusMins = m.DB.GetTotalFocusAllTime()
+}
+
+func (m *Model) refreshHistory() {
+	sessions, _ := m.DB.GetSessions(200)
+	m.HistorySessions = sessions
 }
 
 func (m *Model) SelectedCategory() *db.Category {

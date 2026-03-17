@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ivanlee1999/sesh/internal/app"
@@ -68,6 +69,33 @@ func renderTabBar(m app.Model, w int) string {
 func renderStatusBar(m app.Model, w int) string {
 	var stateStr, hints string
 	stateStyle := lipgloss.NewStyle().Bold(true)
+
+	if m.InputMode == app.ModeSessionComplete {
+		stateStr = stateStyle.Foreground(theme.FocusAccent).Render(" ✓ SESSION COMPLETE ")
+		hints = "│ Enter:save   Esc:discard"
+		hintStyle := lipgloss.NewStyle().Foreground(theme.FGSecondary)
+		line := stateStr + " " + hintStyle.Render(hints)
+		bar := lipgloss.NewStyle().
+			Width(w).
+			Background(theme.StatusBarBG).
+			BorderTop(true).
+			BorderStyle(lipgloss.NormalBorder()).
+			BorderForeground(theme.FocusAccent)
+		return bar.Render(line)
+	}
+	if m.InputMode == app.ModeSessionPost {
+		stateStr = stateStyle.Foreground(theme.FocusAccent).Render(" ✓ SAVED ")
+		hints = "│ b:break  Enter:new session  q:quit"
+		hintStyle := lipgloss.NewStyle().Foreground(theme.FGSecondary)
+		line := stateStr + " " + hintStyle.Render(hints)
+		bar := lipgloss.NewStyle().
+			Width(w).
+			Background(theme.StatusBarBG).
+			BorderTop(true).
+			BorderStyle(lipgloss.NormalBorder()).
+			BorderForeground(theme.FocusAccent)
+		return bar.Render(line)
+	}
 
 	switch m.Timer.Phase {
 	case state.PhaseIdle:
@@ -170,7 +198,11 @@ func renderTimer(m app.Model, w int) string {
 	result := strings.Join(sections, "\n")
 
 	// Overlays
-	if m.InputMode == app.ModeIntention {
+	if m.InputMode == app.ModeSessionComplete {
+		result = overlaySessionComplete(m, w, m.Height)
+	} else if m.InputMode == app.ModeSessionPost {
+		result = overlaySessionPost(m, w, m.Height)
+	} else if m.InputMode == app.ModeIntention {
 		result = overlayIntention(m, w, m.Height)
 	} else if m.InputMode == app.ModeCategory {
 		result = overlayCategory(m, w, m.Height)
@@ -329,21 +361,56 @@ func renderSessionInfo(m app.Model) string {
 }
 
 func renderAnalytics(m app.Model, w int) string {
-	title := lipgloss.NewStyle().Foreground(theme.FG).Bold(true).Render("  Today's Summary")
-	summary := lipgloss.NewStyle().Foreground(theme.FGSecondary).Render(
-		fmt.Sprintf("  Total Focus: %s  │  Sessions: %d  │  Streak: %d days",
-			app.FormatFocusTime(m.TodayFocusMins), m.TodaySessions, m.Streak))
+	bold := func(s string) string { return lipgloss.NewStyle().Foreground(theme.FG).Bold(true).Render(s) }
+	muted := func(s string) string { return lipgloss.NewStyle().Foreground(theme.FGSecondary).Render(s) }
 
-	lines := []string{"", title, summary, ""}
+	lines := []string{
+		"",
+		bold("  Today's Summary"),
+		muted(fmt.Sprintf("  Total Focus: %s  │  Sessions: %d  │  Streak: %d days",
+			app.FormatFocusTime(m.TodayFocusMins), m.TodaySessions, m.Streak)),
+		"",
+		bold("  Focus — Last 7 Days"),
+		"",
+	}
 
-	catTitle := lipgloss.NewStyle().Foreground(theme.FG).Bold(true).Render("  Category Breakdown")
-	lines = append(lines, catTitle, "")
+	if len(m.Last7Days) > 0 {
+		maxHours := 0.0
+		for _, d := range m.Last7Days {
+			if d.Hours > maxHours {
+				maxHours = d.Hours
+			}
+		}
+		if maxHours == 0 {
+			maxHours = 1
+		}
+		barW := 24
+		for _, d := range m.Last7Days {
+			t, _ := time.Parse("2006-01-02", d.Date)
+			dayLabel := t.Format("Mon 02")
+			filled := int(d.Hours / maxHours * float64(barW))
+			if filled > barW {
+				filled = barW
+			}
+			empty := barW - filled
+			bar := lipgloss.NewStyle().Foreground(theme.FocusAccent).Render(strings.Repeat("█", filled)) +
+				lipgloss.NewStyle().Foreground(theme.ProgressEmpty).Render(strings.Repeat("░", empty))
+			hoursStr := "—"
+			if d.Hours > 0 {
+				hoursStr = fmt.Sprintf("%.1fh", d.Hours)
+			}
+			lines = append(lines, fmt.Sprintf("  %s  %s  %s", dayLabel, bar, muted(hoursStr)))
+		}
+	} else {
+		lines = append(lines, muted("  No data yet."))
+	}
+
+	lines = append(lines, "", bold("  Today — Category Breakdown"), "")
 
 	var total float64
 	for _, b := range m.CatBreakdown {
 		total += b.Minutes
 	}
-
 	for _, b := range m.CatBreakdown {
 		pct := 0.0
 		if total > 0 {
@@ -351,70 +418,94 @@ func renderAnalytics(m app.Model, w int) string {
 		}
 		barW := 20
 		filled := int(pct / 100 * float64(barW))
+		if filled > barW {
+			filled = barW
+		}
 		empty := barW - filled
 		color := hexColor(b.Color)
-
+		dot := lipgloss.NewStyle().Foreground(color).Render("●")
 		bar := lipgloss.NewStyle().Foreground(color).Render(strings.Repeat("█", filled)) +
 			lipgloss.NewStyle().Foreground(theme.ProgressEmpty).Render(strings.Repeat("░", empty))
-
-		line := fmt.Sprintf("  %s %3.0f%% %-16s %s",
-			bar, pct, b.Name, app.FormatFocusTime(b.Minutes))
+		line := fmt.Sprintf("  %s %-14s %s %3.0f%%  %s",
+			dot, b.Name, bar, pct, muted(app.FormatFocusTime(b.Minutes)))
 		lines = append(lines, line)
 	}
-
 	if len(m.CatBreakdown) == 0 {
-		lines = append(lines, lipgloss.NewStyle().Foreground(theme.FGSecondary).Render(
-			"  No sessions today. Start focusing!"))
+		lines = append(lines, muted("  No sessions today. Start focusing!"))
 	}
 
 	return strings.Join(lines, "\n")
 }
 
 func renderHistory(m app.Model, w int) string {
-	sessions, _ := m.DB.GetSessions(50)
+	sessions := m.HistorySessions
 	if len(sessions) == 0 {
 		return "\n" + lipgloss.NewStyle().Foreground(theme.FGSecondary).Render(
 			"  No sessions yet. Start focusing!")
+	}
+
+	// Column widths
+	const dateW = 10
+	const durW = 7
+	const catW = 14
+	sepW := 2
+	intentW := w - dateW - durW - catW - sepW*3 - 4
+	if intentW < 8 {
+		intentW = 8
+	}
+
+	// Header
+	hs := lipgloss.NewStyle().Foreground(theme.FGSecondary).Bold(true)
+	sep := "  "
+	header := "  " +
+		hs.Render(padRight("Date", dateW)) + sep +
+		hs.Render(padRight("Dur", durW)) + sep +
+		hs.Render(padRight("Category", catW)) + sep +
+		hs.Render("Intention")
+	divider := "  " + lipgloss.NewStyle().Foreground(theme.Border).Render(
+		strings.Repeat("─", w-4))
+
+	// Scroll window
+	visibleRows := m.Height - 8
+	if visibleRows < 5 {
+		visibleRows = 5
+	}
+	start := m.HistoryScrollOffset
+	end := start + visibleRows
+	if end > len(sessions) {
+		end = len(sessions)
 	}
 
 	lines := []string{
 		"",
 		lipgloss.NewStyle().Foreground(theme.FG).Bold(true).Render("  Session History"),
 		"",
+		header,
+		divider,
 	}
 
-	currentDate := ""
-	for i, s := range sessions {
-		datePart := ""
-		if idx := strings.Index(s.StartedAt, "T"); idx > 0 {
-			datePart = s.StartedAt[:idx]
-		}
-		if datePart != currentDate {
-			currentDate = datePart
-			lines = append(lines, "")
-			lines = append(lines, lipgloss.NewStyle().Foreground(theme.FGSecondary).Bold(true).Render(
-				fmt.Sprintf("  ── %s ──", currentDate)))
-			lines = append(lines, "")
-		}
+	// Scroll-up indicator
+	if start > 0 {
+		lines = append(lines, lipgloss.NewStyle().Foreground(theme.FGSecondary).
+			Width(w).Align(lipgloss.Center).Render("↑ more"))
+	}
 
-		startTime := extractTime(s.StartedAt)
-		endTime := extractTime(s.EndedAt)
-		durMins := s.ActualSeconds / 60
-		durSecs := s.ActualSeconds % 60
+	for i := start; i < end; i++ {
+		s := sessions[i]
+
+		date := ""
+		if idx := strings.Index(s.StartedAt, "T"); idx > 0 {
+			date = s.StartedAt[:idx]
+		}
+		dur := fmt.Sprintf("%d:%02d", s.ActualSeconds/60, s.ActualSeconds%60)
 
 		catName := "—"
+		rowColor := theme.FGSecondary
 		if s.CategoryTitle != nil {
 			catName = *s.CategoryTitle
 		}
-
-		marker := "  "
-		if i == m.HistorySelected {
-			marker = lipgloss.NewStyle().Foreground(theme.Accent).Render("> ")
-		}
-
-		typeIcon := "●"
-		if s.SessionType == "partial_focus" {
-			typeIcon = "◐"
+		if s.CategoryColor != nil {
+			rowColor = hexColor(*s.CategoryColor)
 		}
 
 		title := s.Title
@@ -422,10 +513,33 @@ func renderHistory(m app.Model, w int) string {
 			title = "(no intention)"
 		}
 
-		line := fmt.Sprintf("%s%s %s - %s  %-28s %-14s %d:%02d",
-			marker, typeIcon, startTime, endTime, truncate(title, 26), catName, durMins, durSecs)
+		marker := "  "
+		if i == m.HistorySelected {
+			marker = lipgloss.NewStyle().Foreground(theme.Accent).Render("> ")
+		}
+
+		rc := lipgloss.NewStyle().Foreground(rowColor)
+		catStr := lipgloss.NewStyle().Foreground(rowColor).Bold(true).Render(padRight(catName, catW))
+		dateStr := rc.Render(padRight(date, dateW))
+		durStr := rc.Render(padRight(dur, durW))
+		intentStr := rc.Render(truncate(title, intentW))
+
+		line := marker + dateStr + sep + durStr + sep + catStr + sep + intentStr
 		lines = append(lines, line)
 	}
+
+	// Scroll-down indicator
+	if end < len(sessions) {
+		lines = append(lines, lipgloss.NewStyle().Foreground(theme.FGSecondary).
+			Width(w).Align(lipgloss.Center).Render("↓ more"))
+	}
+
+	// Total focus time
+	lines = append(lines, divider)
+	totalStr := fmt.Sprintf("  Total: %s across %d sessions",
+		app.FormatFocusTime(m.TotalFocusMins), len(sessions))
+	lines = append(lines, lipgloss.NewStyle().Foreground(theme.FGSecondary).Render(totalStr))
+
 	return strings.Join(lines, "\n")
 }
 
@@ -543,6 +657,65 @@ func overlayCategory(m app.Model, w, h int) string {
 	return lipgloss.Place(w, h-4, lipgloss.Center, lipgloss.Center, box)
 }
 
+func overlaySessionComplete(m app.Model, w, h int) string {
+	durStr := state.FormatDuration(m.CompletionDuration)
+	boxW := 52
+	if boxW > w-4 {
+		boxW = w - 4
+	}
+	inputInnerW := boxW - 8
+	inputStyle := lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder(), false, false, true, false).
+		BorderForeground(theme.BorderFocus).
+		Width(inputInnerW)
+	inputText := lipgloss.NewStyle().Foreground(theme.Accent).Render("> ") +
+		lipgloss.NewStyle().Foreground(theme.FG).Render(m.CompletionNotes) +
+		lipgloss.NewStyle().Background(theme.Accent).Foreground(theme.BG).Render(" ")
+	inputField := inputStyle.Render(inputText)
+
+	content := lipgloss.NewStyle().Foreground(theme.FocusAccent).Bold(true).Render("✓  Session Complete") +
+		"\n" +
+		lipgloss.NewStyle().Foreground(theme.FGSecondary).Render("Duration: "+durStr) +
+		"\n\n" +
+		lipgloss.NewStyle().Foreground(theme.FG).Render("Notes (optional)") +
+		"\n" + inputField + "\n\n" +
+		lipgloss.NewStyle().Foreground(theme.FGSecondary).Render("Enter ↵ save   Esc discard")
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(theme.FocusAccent).
+		Width(boxW).
+		Padding(1, 3).
+		Render(content)
+	return lipgloss.Place(w, h-4, lipgloss.Center, lipgloss.Center, box)
+}
+
+func overlaySessionPost(m app.Model, w, h int) string {
+	durStr := state.FormatDuration(m.CompletionDuration)
+	boxW := 48
+	if boxW > w-4 {
+		boxW = w - 4
+	}
+	content := lipgloss.NewStyle().Foreground(theme.FocusAccent).Bold(true).Render("✓  Session Saved") +
+		"\n" +
+		lipgloss.NewStyle().Foreground(theme.FGSecondary).Render("Duration: "+durStr) +
+		"\n\n" +
+		lipgloss.NewStyle().Foreground(theme.FG).Bold(true).Render("[b]") +
+		lipgloss.NewStyle().Foreground(theme.FGSecondary).Render(" Break   ") +
+		lipgloss.NewStyle().Foreground(theme.FG).Bold(true).Render("[Enter]") +
+		lipgloss.NewStyle().Foreground(theme.FGSecondary).Render(" New Session   ") +
+		lipgloss.NewStyle().Foreground(theme.FG).Bold(true).Render("[q]") +
+		lipgloss.NewStyle().Foreground(theme.FGSecondary).Render(" Quit")
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(theme.FocusAccent).
+		Width(boxW).
+		Padding(1, 3).
+		Render(content)
+	return lipgloss.Place(w, h-4, lipgloss.Center, lipgloss.Center, box)
+}
+
 // Helpers
 
 func center(s string, w int) string {
@@ -595,6 +768,13 @@ func truncate(s string, max int) string {
 		return s[:max-3] + "..."
 	}
 	return s
+}
+
+func padRight(s string, w int) string {
+	if len(s) >= w {
+		return s[:w]
+	}
+	return s + strings.Repeat(" ", w-len(s))
 }
 
 func config_path() string {

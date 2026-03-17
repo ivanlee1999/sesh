@@ -151,3 +151,48 @@ func (d *Database) DeleteSession(id string) error {
 	_, err := d.DB.Exec("DELETE FROM sessions WHERE id = ?", id)
 	return err
 }
+
+type DayFocus struct {
+	Date  string
+	Hours float64
+}
+
+func (d *Database) GetLast7DaysFocus() ([]DayFocus, error) {
+	rows, err := d.DB.Query(
+		`WITH RECURSIVE cnt(n) AS (
+			SELECT 0 UNION ALL SELECT n+1 FROM cnt WHERE n < 6
+		)
+		SELECT date('now', 'localtime', '-' || (6-n) || ' days') AS day,
+		       COALESCE(SUM(s.actual_seconds - s.pause_seconds), 0) / 3600.0 AS hours
+		FROM cnt
+		LEFT JOIN sessions s
+			ON date(s.started_at, 'localtime') = date('now', 'localtime', '-' || (6-n) || ' days')
+			AND s.session_type IN ('full_focus', 'partial_focus')
+		GROUP BY n
+		ORDER BY n ASC`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []DayFocus
+	for rows.Next() {
+		var f DayFocus
+		if err := rows.Scan(&f.Date, &f.Hours); err != nil {
+			return nil, err
+		}
+		result = append(result, f)
+	}
+	return result, nil
+}
+
+func (d *Database) GetTotalFocusAllTime() float64 {
+	var mins float64
+	_ = d.DB.QueryRow(
+		`SELECT COALESCE(SUM(actual_seconds - pause_seconds), 0) / 60.0
+		 FROM sessions
+		 WHERE session_type IN ('full_focus', 'partial_focus')`,
+	).Scan(&mins)
+	return mins
+}
