@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/ivanlee1999/sesh/internal/calendar"
+	"github.com/ivanlee1999/sesh/internal/calsync"
 	"github.com/ivanlee1999/sesh/internal/config"
 	"github.com/ivanlee1999/sesh/internal/db"
 	"github.com/ivanlee1999/sesh/internal/state"
@@ -33,6 +34,7 @@ const (
 )
 
 type tickMsg time.Time
+type calSyncDoneMsg struct{}
 
 func tickCmd(d time.Duration) tea.Cmd {
 	return tea.Tick(d, func(t time.Time) tea.Msg {
@@ -136,6 +138,10 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		return m.handleKey(msg)
+
+	case calSyncDoneMsg:
+		// Calendar sync completed in background; nothing to do.
+		return m, nil
 	}
 	return m, nil
 }
@@ -338,12 +344,14 @@ func (m Model) handleTimerKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		case " ":
 			m.togglePause()
 		case "f":
-			m.finishSession()
+			cmd := m.finishSession()
+			return m, cmd
 		case "x":
 			m.abandonSession()
 		case "b":
-			m.finishSession()
+			cmd := m.finishSession()
 			m.startBreak(state.BreakShort)
+			return m, cmd
 		}
 	case state.PhaseOverflow:
 		switch key {
@@ -354,15 +362,17 @@ func (m Model) handleTimerKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		case "x":
 			m.abandonSession()
 		case "b":
-			m.finishSession()
+			cmd := m.finishSession()
 			m.startBreak(state.BreakShort)
+			return m, cmd
 		}
 	case state.PhasePaused:
 		switch key {
 		case " ":
 			m.togglePause()
 		case "f":
-			m.finishSession()
+			cmd := m.finishSession()
+			return m, cmd
 		case "x":
 			m.abandonSession()
 		}
@@ -447,10 +457,10 @@ func (m *Model) togglePause() {
 	}
 }
 
-func (m *Model) finishSession() {
+func (m *Model) finishSession() tea.Cmd {
 	if m.StartedAtChrono.IsZero() {
 		m.Timer = state.NewIdle()
-		return
+		return nil
 	}
 
 	now := time.Now()
@@ -485,15 +495,16 @@ func (m *Model) finishSession() {
 		startedStr, endedStr, nil,
 	)
 
+	rec := db.SessionRecord{
+		ID: "auto", Title: m.Intention,
+		CategoryID: catID, CategoryTitle: catTitle, CategoryColor: catColor,
+		SessionType: sessionType, TargetSeconds: targetSecs,
+		ActualSeconds: actualSecs, PauseSeconds: pauseSecs,
+		OverflowSeconds: overflowSecs, StartedAt: startedStr, EndedAt: endedStr,
+	}
+
 	// Auto-export to ICS
 	if m.Config.Calendar.Enabled && m.Config.Calendar.AutoExport {
-		rec := db.SessionRecord{
-			ID: "auto", Title: m.Intention,
-			CategoryID: catID, CategoryTitle: catTitle, CategoryColor: catColor,
-			SessionType: sessionType, TargetSeconds: targetSecs,
-			ActualSeconds: actualSecs, PauseSeconds: pauseSecs,
-			OverflowSeconds: overflowSecs, StartedAt: startedStr, EndedAt: endedStr,
-		}
 		calendar.AutoExportSession(&rec, m.Config.Calendar.ICSPath)
 	}
 
@@ -503,6 +514,8 @@ func (m *Model) finishSession() {
 	m.refreshStats()
 	m.Timer = state.NewIdle()
 	m.StartedAtChrono = time.Time{}
+
+	return m.calSyncCmd(rec)
 }
 
 func (m *Model) triggerSessionComplete() {
@@ -528,8 +541,9 @@ func (m Model) handleSessionCompleteKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.Timer = state.NewIdle()
 		m.StartedAtChrono = time.Time{}
 	case "enter":
-		m.saveCompletedSession()
+		cmd := m.saveCompletedSession()
 		m.InputMode = ModeSessionPost
+		return m, cmd
 	case "backspace":
 		if len(m.CompletionNotes) > 0 {
 			runes := []rune(m.CompletionNotes)
@@ -563,7 +577,7 @@ func (m Model) handleSessionPostKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *Model) saveCompletedSession() {
+func (m *Model) saveCompletedSession() tea.Cmd {
 	actualSecs := int64(m.CompletionDuration.Seconds())
 	targetSecs := int64(m.TargetDuration.Seconds())
 	pauseSecs := int64(m.PauseAccum.Seconds())
@@ -591,14 +605,15 @@ func (m *Model) saveCompletedSession() {
 
 	m.DB.SaveSession(m.Intention, catID, sessionType, targetSecs, actualSecs, pauseSecs, 0, startedStr, endedStr, notesPtr)
 
+	rec := db.SessionRecord{
+		ID: "auto", Title: m.Intention,
+		CategoryID: catID, CategoryTitle: catTitle, CategoryColor: catColor,
+		SessionType: sessionType, TargetSeconds: targetSecs,
+		ActualSeconds: actualSecs, PauseSeconds: pauseSecs,
+		StartedAt: startedStr, EndedAt: endedStr, Notes: notesPtr,
+	}
+
 	if m.Config.Calendar.Enabled && m.Config.Calendar.AutoExport {
-		rec := db.SessionRecord{
-			ID: "auto", Title: m.Intention,
-			CategoryID: catID, CategoryTitle: catTitle, CategoryColor: catColor,
-			SessionType: sessionType, TargetSeconds: targetSecs,
-			ActualSeconds: actualSecs, PauseSeconds: pauseSecs,
-			StartedAt: startedStr, EndedAt: endedStr,
-		}
 		calendar.AutoExportSession(&rec, m.Config.Calendar.ICSPath)
 	}
 
@@ -607,6 +622,19 @@ func (m *Model) saveCompletedSession() {
 	}
 	m.refreshStats()
 	m.refreshHistory()
+
+	return m.calSyncCmd(rec)
+}
+
+func (m *Model) calSyncCmd(rec db.SessionRecord) tea.Cmd {
+	if !m.Config.Calendar.Google.Enabled && !m.Config.Calendar.Outlook.Enabled {
+		return nil
+	}
+	cfg := m.Config.Calendar
+	return func() tea.Msg {
+		calsync.SyncSession(cfg, &rec)
+		return calSyncDoneMsg{}
+	}
 }
 
 func (m *Model) abandonSession() {

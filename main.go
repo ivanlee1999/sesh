@@ -10,6 +10,7 @@ import (
 	"github.com/ivanlee1999/sesh/internal/calendar"
 	"github.com/ivanlee1999/sesh/internal/config"
 	"github.com/ivanlee1999/sesh/internal/db"
+	"github.com/ivanlee1999/sesh/internal/calsync"
 	"github.com/ivanlee1999/sesh/internal/todoist"
 	"github.com/ivanlee1999/sesh/internal/ui"
 	"github.com/spf13/cobra"
@@ -31,6 +32,7 @@ func main() {
 	root.AddCommand(todoistCmd())
 	root.AddCommand(exportCmd())
 	root.AddCommand(startCmd())
+	root.AddCommand(calendarCmd())
 
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
@@ -358,6 +360,127 @@ func exportCmd() *cobra.Command {
 	cmd.Flags().StringVarP(&format, "format", "f", "ics", "Export format: ics, json, csv")
 	cmd.Flags().StringVarP(&output, "output", "o", "", "Output file path")
 	return cmd
+}
+
+func calendarCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "calendar",
+		Short: "Manage calendar integrations",
+	}
+
+	authCmd := &cobra.Command{
+		Use:   "auth",
+		Short: "Authenticate with a calendar provider",
+	}
+	authCmd.AddCommand(googleAuthCmd())
+	authCmd.AddCommand(outlookAuthCmd())
+	cmd.AddCommand(authCmd)
+	cmd.AddCommand(calendarStatusCmd())
+
+	return cmd
+}
+
+func googleAuthCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "google",
+		Short: "Authenticate with Google Calendar",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := config.Load()
+			if cfg.Calendar.Google.ClientID == "" || cfg.Calendar.Google.ClientSecret == "" {
+				fmt.Fprintln(os.Stderr, "Error: Google Calendar client credentials not configured.")
+				fmt.Fprintf(os.Stderr, "Add your credentials to %s\n\n", config.ConfigPath())
+				fmt.Fprintln(os.Stderr, "  [calendar.google]")
+				fmt.Fprintln(os.Stderr, "  enabled = true")
+				fmt.Fprintln(os.Stderr, `  client_id = "your-client-id.apps.googleusercontent.com"`)
+				fmt.Fprintln(os.Stderr, `  client_secret = "your-client-secret"`)
+				fmt.Fprintln(os.Stderr, `  calendar_id = "primary"`)
+				fmt.Fprintln(os.Stderr, "\nCreate credentials at: https://console.cloud.google.com/apis/credentials")
+				fmt.Fprintln(os.Stderr, "Enable the Google Calendar API in your project first.")
+				return nil
+			}
+
+			p := calsync.NewGoogle(cfg.Calendar.Google)
+			if err := p.Authenticate(); err != nil {
+				return fmt.Errorf("google auth failed: %w", err)
+			}
+			fmt.Println("\nGoogle Calendar authentication successful!")
+			fmt.Printf("Token saved to %s\n", calsync.TokenPath("google"))
+			return nil
+		},
+	}
+}
+
+func outlookAuthCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "outlook",
+		Short: "Authenticate with Outlook Calendar",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := config.Load()
+			if cfg.Calendar.Outlook.ClientID == "" {
+				fmt.Fprintln(os.Stderr, "Error: Outlook Calendar client ID not configured.")
+				fmt.Fprintf(os.Stderr, "Add your credentials to %s\n\n", config.ConfigPath())
+				fmt.Fprintln(os.Stderr, "  [calendar.outlook]")
+				fmt.Fprintln(os.Stderr, "  enabled = true")
+				fmt.Fprintln(os.Stderr, `  client_id = "your-application-client-id"`)
+				fmt.Fprintln(os.Stderr, `  tenant_id = "common"`)
+				fmt.Fprintln(os.Stderr, "\nRegister an app at: https://portal.azure.com/#blade/Microsoft_AAD_RegisteredApps/ApplicationsListBlade")
+				fmt.Fprintln(os.Stderr, "Add a redirect URI: http://localhost:19876/callback")
+				return nil
+			}
+
+			p := calsync.NewOutlook(cfg.Calendar.Outlook)
+			if err := p.Authenticate(); err != nil {
+				return fmt.Errorf("outlook auth failed: %w", err)
+			}
+			fmt.Println("\nOutlook Calendar authentication successful!")
+			fmt.Printf("Token saved to %s\n", calsync.TokenPath("outlook"))
+			return nil
+		},
+	}
+}
+
+func calendarStatusCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "status",
+		Short: "Show calendar sync status",
+		Run: func(cmd *cobra.Command, args []string) {
+			cfg := config.Load()
+
+			fmt.Println("Calendar Sync Status")
+			fmt.Println(repeat("─", 40))
+
+			// Google
+			fmt.Printf("\nGoogle Calendar:  ")
+			if !cfg.Calendar.Google.Enabled {
+				fmt.Println("disabled")
+			} else if !calsync.HasToken("google") {
+				fmt.Println("enabled, not authenticated")
+				fmt.Println("  Run: sesh calendar auth google")
+			} else {
+				fmt.Println("enabled, authenticated ✓")
+				fmt.Printf("  Calendar ID: %s\n", cfg.Calendar.Google.CalendarID)
+			}
+
+			// Outlook
+			fmt.Printf("\nOutlook Calendar: ")
+			if !cfg.Calendar.Outlook.Enabled {
+				fmt.Println("disabled")
+			} else if !calsync.HasToken("outlook") {
+				fmt.Println("enabled, not authenticated")
+				fmt.Println("  Run: sesh calendar auth outlook")
+			} else {
+				fmt.Println("enabled, authenticated ✓")
+			}
+
+			// ICS export
+			fmt.Printf("\nICS Export:       ")
+			if cfg.Calendar.Enabled && cfg.Calendar.AutoExport {
+				fmt.Printf("enabled → %s\n", cfg.Calendar.ICSPath)
+			} else {
+				fmt.Println("disabled")
+			}
+		},
+	}
 }
 
 // Helpers

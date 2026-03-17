@@ -78,6 +78,28 @@ func parseTOML(data []byte, cfg *Config) {
 			case "auto_export":
 				cfg.Calendar.AutoExport = val == "true"
 			}
+		case "calendar.google":
+			switch key {
+			case "enabled":
+				cfg.Calendar.Google.Enabled = val == "true"
+			case "calendar_id":
+				cfg.Calendar.Google.CalendarID = val
+			case "client_id":
+				cfg.Calendar.Google.ClientID = val
+			case "client_secret":
+				cfg.Calendar.Google.ClientSecret = val
+			}
+		case "calendar.outlook":
+			switch key {
+			case "enabled":
+				cfg.Calendar.Outlook.Enabled = val == "true"
+			case "calendar_id":
+				cfg.Calendar.Outlook.CalendarID = val
+			case "client_id":
+				cfg.Calendar.Outlook.ClientID = val
+			case "tenant_id":
+				cfg.Calendar.Outlook.TenantID = val
+			}
 		}
 	}
 }

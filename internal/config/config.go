@@ -37,6 +37,22 @@ type CalendarConfig struct {
 	Enabled    bool   `toml:"enabled"`
 	ICSPath    string `toml:"ics_path"`
 	AutoExport bool   `toml:"auto_export"`
+	Google     GoogleCalendarConfig
+	Outlook    OutlookCalendarConfig
+}
+
+type GoogleCalendarConfig struct {
+	Enabled      bool   `toml:"enabled"`
+	CalendarID   string `toml:"calendar_id"`
+	ClientID     string `toml:"client_id"`
+	ClientSecret string `toml:"client_secret"`
+}
+
+type OutlookCalendarConfig struct {
+	Enabled    bool   `toml:"enabled"`
+	CalendarID string `toml:"calendar_id"`
+	ClientID   string `toml:"client_id"`
+	TenantID   string `toml:"tenant_id"`
 }
 
 func Default() Config {
@@ -60,6 +76,12 @@ func Default() Config {
 			Enabled:    false,
 			ICSPath:    filepath.Join(DataDir(), "sesh.ics"),
 			AutoExport: true,
+			Google: GoogleCalendarConfig{
+				CalendarID: "primary",
+			},
+			Outlook: OutlookCalendarConfig{
+				TenantID: "common",
+			},
 		},
 	}
 }
