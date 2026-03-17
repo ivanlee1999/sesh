@@ -27,11 +27,11 @@ func DarkTheme() Theme {
 		BorderFocus:    lipgloss.Color("#A3E635"),
 		Accent:         lipgloss.Color("#A3E635"),
 		Error:          lipgloss.Color("#E06C75"),
-		FocusAccent:    lipgloss.Color("#A3E635"),
+		FocusAccent:    lipgloss.Color("#98C379"),
 		OverflowAccent: lipgloss.Color("#E5C07B"),
-		BreakAccent:    lipgloss.Color("#56B6C2"),
-		PausedFG:       lipgloss.Color("#6C7086"),
-		ProgressEmpty:  lipgloss.Color("#313244"),
+		BreakAccent:    lipgloss.Color("#61AFEF"),
+		PausedFG:       lipgloss.Color("#C678DD"),
+		ProgressEmpty:  lipgloss.Color("#45475A"),
 		StatusBarBG:    lipgloss.Color("#181825"),
 	}
 }

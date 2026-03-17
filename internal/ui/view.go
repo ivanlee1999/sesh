@@ -71,7 +71,7 @@ func renderStatusBar(m app.Model, w int) string {
 
 	switch m.Timer.Phase {
 	case state.PhaseIdle:
-		stateStr = stateStyle.Foreground(theme.FGSecondary).Render(" IDLE ")
+		stateStr = stateStyle.Foreground(theme.FGSecondary).Render(" ○ IDLE ")
 		hints = "│ Enter:focus  b:break  i:intention  c:category  q:quit"
 	case state.PhaseFocus:
 		stateStr = stateStyle.Foreground(theme.FocusAccent).Render(
@@ -94,7 +94,7 @@ func renderStatusBar(m app.Model, w int) string {
 			fmt.Sprintf(" ☕ %s BREAK OVER ", m.Timer.DisplayTime()))
 		hints = "│ Enter:start focus"
 	case state.PhaseAbandoned:
-		stateStr = stateStyle.Foreground(theme.Error).Render(" ABANDONED ")
+		stateStr = stateStyle.Foreground(theme.Error).Render(" ✖ ABANDONED ")
 		hints = "│ u:undo (5s)"
 	}
 
@@ -105,7 +105,7 @@ func renderStatusBar(m app.Model, w int) string {
 		Background(theme.StatusBarBG).
 		BorderTop(true).
 		BorderStyle(lipgloss.NormalBorder()).
-		BorderForeground(theme.Border)
+		BorderForeground(stateAccentColor(m.Timer.Phase))
 	return bar.Render(line)
 }
 
@@ -113,7 +113,7 @@ func renderTimer(m app.Model, w int) string {
 	var sections []string
 
 	// Clock circle
-	sections = append(sections, renderClock(m))
+	sections = append(sections, renderClock(m, w))
 
 	// Intention & category
 	if m.Intention != "" || m.Timer.IsActive() {
@@ -174,14 +174,17 @@ func renderTimer(m app.Model, w int) string {
 	return result
 }
 
-func renderClock(m app.Model) string {
+// renderClock draws the timer clock face surrounded by a 20-segment progress ring.
+// Ring fills clockwise: 6 top (left→right), 4 right (top→bottom),
+// 6 bottom (right→left), 4 left (bottom→top) = 20 total.
+func renderClock(m app.Model, w int) string {
 	var timeStr string
 	var color lipgloss.Color
 
 	switch m.Timer.Phase {
 	case state.PhaseIdle:
 		timeStr = fmt.Sprintf("%02d:00", m.FocusDurationMins)
-		color = theme.FG
+		color = theme.FGSecondary
 	case state.PhaseFocus:
 		timeStr = m.Timer.DisplayTime()
 		color = theme.FocusAccent
@@ -202,23 +205,60 @@ func renderClock(m app.Model) string {
 		color = theme.Error
 	}
 
+	progress := m.Timer.Progress()
+	if progress < 0 {
+		progress = 0
+	}
+	if progress > 1 {
+		progress = 1
+	}
+
+	const totalSegs = 20
+	filled := int(float64(totalSegs) * progress)
+	filledDot := lipgloss.NewStyle().Foreground(color).Render("◉")
+	emptyDot := lipgloss.NewStyle().Foreground(theme.ProgressEmpty).Render("○")
+	seg := func(pos int) string {
+		if pos < filled {
+			return filledDot
+		}
+		return emptyDot
+	}
+
 	label := m.Timer.Phase.String()
 	timeStyle := lipgloss.NewStyle().Foreground(color).Bold(true)
 	labelStyle := lipgloss.NewStyle().Foreground(color)
-	borderStyle := lipgloss.NewStyle().Foreground(color)
+	bdr := lipgloss.NewStyle().Foreground(color)
+
+	// Box: inner content width=14, total box width=18 (╭+16×─+╮ or │+space+14+space+│)
+	const innerW = 14
+	topBorder := bdr.Render("╭" + strings.Repeat("─", innerW+2) + "╮")
+	botBorder := bdr.Render("╰" + strings.Repeat("─", innerW+2) + "╯")
+	pipe := bdr.Render("│")
+	timeCell := pipe + " " + padCenter(timeStyle.Render(timeStr), innerW) + " " + pipe
+	labelCell := pipe + " " + padCenter(labelStyle.Render(label), innerW) + " " + pipe
+
+	// Ring positions (clockwise):
+	//   Top    : 0-5   displayed left→right
+	//   Right  : 6-9   displayed top→bottom
+	//   Bottom : 10-15 displayed right→left (seg(15)..seg(10) left→right)
+	//   Left   : 16-19 displayed bottom→top (seg(19)..seg(16) top→bottom)
+	//
+	// Ring row visible width = 22 (matches side-dot rows: 1+1+18+1+1)
+	// 6 dots with 2-space gaps = 16 chars; pad 3 each side → 3+16+3 = 22 ✓
+	topRing := "   " + seg(0) + "  " + seg(1) + "  " + seg(2) + "  " + seg(3) + "  " + seg(4) + "  " + seg(5) + "   "
+	botRing := "   " + seg(15) + "  " + seg(14) + "  " + seg(13) + "  " + seg(12) + "  " + seg(11) + "  " + seg(10) + "   "
 
 	lines := []string{
 		"",
-		borderStyle.Render("     ╭────────────╮"),
-		borderStyle.Render("  ╭──╯            ╰──╮"),
-		borderStyle.Render(" ╭╯") + fmt.Sprintf("  %s  ", timeStyle.Render(fmt.Sprintf("%-10s", timeStr))) + borderStyle.Render("╰╮"),
-		borderStyle.Render(" │") + fmt.Sprintf("   %s   ", labelStyle.Render(fmt.Sprintf("%-10s", label))) + borderStyle.Render("│"),
-		borderStyle.Render(" ╰╮") + "                " + borderStyle.Render("╭╯"),
-		borderStyle.Render("  ╰──╮            ╭──╯"),
-		borderStyle.Render("     ╰────────────╯"),
+		topRing,
+		seg(19) + " " + topBorder + " " + seg(6),
+		seg(18) + " " + timeCell + " " + seg(7),
+		seg(17) + " " + labelCell + " " + seg(8),
+		seg(16) + " " + botBorder + " " + seg(9),
+		botRing,
 		"",
 	}
-	return strings.Join(lines, "\n")
+	return lipgloss.PlaceHorizontal(w, lipgloss.Center, strings.Join(lines, "\n"))
 }
 
 func renderProgressBar(m app.Model, w int) string {
@@ -458,6 +498,36 @@ func overlayCategory(m app.Model, w, h int) string {
 
 func center(s string, w int) string {
 	return lipgloss.PlaceHorizontal(w, lipgloss.Center, s)
+}
+
+// padCenter centers s (which may contain ANSI codes) within a field of visible width w.
+func padCenter(s string, w int) string {
+	sW := lipgloss.Width(s)
+	pad := w - sW
+	if pad <= 0 {
+		return s
+	}
+	left := pad / 2
+	right := pad - left
+	return strings.Repeat(" ", left) + s + strings.Repeat(" ", right)
+}
+
+// stateAccentColor returns the accent color for the given timer phase.
+func stateAccentColor(phase state.TimerPhase) lipgloss.Color {
+	switch phase {
+	case state.PhaseFocus:
+		return theme.FocusAccent
+	case state.PhaseOverflow:
+		return theme.OverflowAccent
+	case state.PhaseBreak, state.PhaseBreakOverflow:
+		return theme.BreakAccent
+	case state.PhasePaused:
+		return theme.PausedFG
+	case state.PhaseAbandoned:
+		return theme.Error
+	default:
+		return theme.Border
+	}
 }
 
 func hexColor(hex string) lipgloss.Color {
