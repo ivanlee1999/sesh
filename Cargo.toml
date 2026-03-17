@@ -1,0 +1,32 @@
+[package]
+name = "sesh"
+version = "0.1.0"
+edition = "2021"
+description = "A terminal-native Pomodoro focus timer"
+license = "MIT"
+
+[dependencies]
+# TUI
+ratatui = "0.29"
+crossterm = "0.28"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Data
+rusqlite = { version = "0.32", features = ["bundled"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# Config & serialization
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+serde_json = "1"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Misc
+directories = "5"
+uuid = { version = "1", features = ["v4", "serde"] }
+thiserror = "2"
+anyhow = "1"
