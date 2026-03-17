@@ -117,7 +117,7 @@ impl Database {
             [],
             |row| row.get(0),
         ).unwrap_or(0);
-        Ok(streak)
+        Ok(streak.max(0))
     }
 
     pub fn get_category_breakdown_today(&self) -> DbResult<Vec<(String, String, f64)>> {
