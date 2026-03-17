@@ -1,1 +1,4 @@
-/target
+/sesh
+*.db
+*.db-wal
+*.db-shm
