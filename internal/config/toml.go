@@ -89,6 +89,13 @@ func parseTOML(data []byte, cfg *Config) {
 			case "client_secret":
 				cfg.Calendar.Google.ClientSecret = val
 			}
+		case "notifications":
+			switch key {
+			case "enabled":
+				cfg.Notifications.Enabled = val == "true"
+			case "sound":
+				cfg.Notifications.Sound = val
+			}
 		case "calendar.outlook":
 			switch key {
 			case "enabled":

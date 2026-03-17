@@ -8,6 +8,7 @@ import (
 	"github.com/ivanlee1999/sesh/internal/calsync"
 	"github.com/ivanlee1999/sesh/internal/config"
 	"github.com/ivanlee1999/sesh/internal/db"
+	"github.com/ivanlee1999/sesh/internal/notify"
 	"github.com/ivanlee1999/sesh/internal/state"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -35,6 +36,7 @@ const (
 
 type tickMsg time.Time
 type calSyncDoneMsg struct{}
+type notifyDoneMsg struct{}
 
 func tickCmd(d time.Duration) tea.Cmd {
 	return tea.Tick(d, func(t time.Time) tea.Msg {
@@ -90,6 +92,10 @@ type Model struct {
 	// Terminal size
 	Width  int
 	Height int
+
+	// Pending notification (set during tick, consumed in Update)
+	pendingNotifyTitle string
+	pendingNotifyBody  string
 }
 
 func NewModel(database *db.Database, cfg config.Config) Model {
@@ -134,13 +140,24 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 
 	case tickMsg:
 		m.tick()
-		return m, tickCmd(time.Duration(m.Config.General.TickRateMs) * time.Millisecond)
+		tickD := time.Duration(m.Config.General.TickRateMs) * time.Millisecond
+		if m.pendingNotifyTitle != "" {
+			cmd := m.notifyCmd(m.pendingNotifyTitle, m.pendingNotifyBody)
+			m.pendingNotifyTitle = ""
+			m.pendingNotifyBody = ""
+			return m, tea.Batch(tickCmd(tickD), cmd)
+		}
+		return m, tickCmd(tickD)
 
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 
 	case calSyncDoneMsg:
 		// Calendar sync completed in background; nothing to do.
+		return m, nil
+
+	case notifyDoneMsg:
+		// Notification sent in background; nothing to do.
 		return m, nil
 	}
 	return m, nil
@@ -159,6 +176,13 @@ func (m *Model) tick() {
 			m.Timer.Elapsed = 0
 			m.Timer.TargetWas = m.Timer.Target
 			m.Timer.Remaining = 0
+			mins := int(m.Timer.Target.Minutes())
+			body := fmt.Sprintf("%d min focus session finished", mins)
+			if m.Intention != "" {
+				body += ": " + m.Intention
+			}
+			m.pendingNotifyTitle = "Focus Complete!"
+			m.pendingNotifyBody = body
 		} else {
 			m.Timer.Remaining -= d
 		}
@@ -168,6 +192,12 @@ func (m *Model) tick() {
 		if m.Timer.Remaining <= d {
 			m.Timer.Phase = state.PhaseBreakOverflow
 			m.Timer.Elapsed = 0
+			if m.Timer.BreakType == state.BreakLong {
+				m.pendingNotifyTitle = "Long Break Over!"
+			} else {
+				m.pendingNotifyTitle = "Break Over!"
+			}
+			m.pendingNotifyBody = "Time to focus."
 		} else {
 			m.Timer.Remaining -= d
 		}
@@ -634,6 +664,17 @@ func (m *Model) calSyncCmd(rec db.SessionRecord) tea.Cmd {
 	return func() tea.Msg {
 		calsync.SyncSession(cfg, &rec)
 		return calSyncDoneMsg{}
+	}
+}
+
+func (m *Model) notifyCmd(title, body string) tea.Cmd {
+	if !m.Config.Notifications.Enabled {
+		return nil
+	}
+	sound := m.Config.Notifications.Sound
+	return func() tea.Msg {
+		notify.Send(title, body, sound)
+		return notifyDoneMsg{}
 	}
 }
 

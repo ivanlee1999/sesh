@@ -6,10 +6,11 @@ import (
 )
 
 type Config struct {
-	General  GeneralConfig  `toml:"general"`
-	Timer    TimerConfig    `toml:"timer"`
-	Todoist  TodoistConfig  `toml:"todoist"`
-	Calendar CalendarConfig `toml:"calendar"`
+	General       GeneralConfig       `toml:"general"`
+	Timer         TimerConfig         `toml:"timer"`
+	Todoist       TodoistConfig       `toml:"todoist"`
+	Calendar      CalendarConfig      `toml:"calendar"`
+	Notifications NotificationsConfig `toml:"notifications"`
 }
 
 type GeneralConfig struct {
@@ -31,6 +32,11 @@ type TimerConfig struct {
 type TodoistConfig struct {
 	APIToken          string `toml:"api_token"`
 	CommentOnComplete bool   `toml:"comment_on_complete"`
+}
+
+type NotificationsConfig struct {
+	Enabled bool   `toml:"enabled"`
+	Sound   string `toml:"sound"`
 }
 
 type CalendarConfig struct {
@@ -71,6 +77,10 @@ func Default() Config {
 		},
 		Todoist: TodoistConfig{
 			CommentOnComplete: true,
+		},
+		Notifications: NotificationsConfig{
+			Enabled: true,
+			Sound:   "Glass",
 		},
 		Calendar: CalendarConfig{
 			Enabled:    false,
