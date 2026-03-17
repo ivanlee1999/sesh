@@ -29,6 +29,7 @@ const (
 	ModeCategory
 	ModeSessionComplete // notes input after timer hits 0
 	ModeSessionPost     // after saving: b/enter/q
+	ModeHelp            // keybinding help overlay
 )
 
 type tickMsg time.Time
@@ -147,16 +148,6 @@ func (m *Model) tick() {
 	switch m.Timer.Phase {
 	case state.PhaseFocus:
 		if m.Timer.Remaining <= d {
-			now := time.Now()
-			totalElapsed := now.Sub(m.StartedAtChrono)
-			actual := totalElapsed - m.PauseAccum
-			if actual < 0 {
-				actual = 0
-			}
-			m.CompletionDuration = actual
-			m.CompletedAt = now
-			m.CompletionNotes = ""
-			m.InputMode = ModeSessionComplete
 			fmt.Print("\a")
 			m.Timer.Phase = state.PhaseOverflow
 			m.Timer.Elapsed = 0
@@ -184,6 +175,14 @@ func (m *Model) tick() {
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	// Help overlay swallows all keys
+	if m.InputMode == ModeHelp {
+		if msg.String() == "esc" || msg.String() == "?" {
+			m.InputMode = ModeNormal
+		}
+		return m, nil
+	}
+
 	// Input modes
 	if m.InputMode == ModeIntention {
 		return m.handleIntentionKey(msg)
@@ -204,6 +203,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	if key == "ctrl+c" {
 		m.Quitting = true
 		return m, tea.Quit
+	}
+
+	// Help overlay
+	if key == "?" {
+		m.InputMode = ModeHelp
+		return m, nil
 	}
 
 	// Global keys
@@ -328,12 +333,24 @@ func (m Model) handleTimerKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		case "<", ",":
 			m.adjustDuration(-1)
 		}
-	case state.PhaseFocus, state.PhaseOverflow:
+	case state.PhaseFocus:
 		switch key {
 		case " ":
 			m.togglePause()
 		case "f":
 			m.finishSession()
+		case "x":
+			m.abandonSession()
+		case "b":
+			m.finishSession()
+			m.startBreak(state.BreakShort)
+		}
+	case state.PhaseOverflow:
+		switch key {
+		case " ":
+			m.togglePause()
+		case "f":
+			m.triggerSessionComplete()
 		case "x":
 			m.abandonSession()
 		case "b":
@@ -486,6 +503,19 @@ func (m *Model) finishSession() {
 	m.refreshStats()
 	m.Timer = state.NewIdle()
 	m.StartedAtChrono = time.Time{}
+}
+
+func (m *Model) triggerSessionComplete() {
+	now := time.Now()
+	totalElapsed := now.Sub(m.StartedAtChrono)
+	actual := totalElapsed - m.PauseAccum
+	if actual < 0 {
+		actual = 0
+	}
+	m.CompletionDuration = actual
+	m.CompletedAt = now
+	m.CompletionNotes = ""
+	m.InputMode = ModeSessionComplete
 }
 
 func (m Model) handleSessionCompleteKey(msg tea.KeyMsg) (Model, tea.Cmd) {

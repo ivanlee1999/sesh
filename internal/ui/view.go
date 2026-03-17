@@ -42,7 +42,11 @@ func View(m app.Model) string {
 	}
 	content = lipgloss.NewStyle().Height(contentH).MaxHeight(contentH).Width(w).Render(content)
 
-	return lipgloss.JoinVertical(lipgloss.Left, tabBar, content, statusBar)
+	full := lipgloss.JoinVertical(lipgloss.Left, tabBar, content, statusBar)
+	if m.InputMode == app.ModeHelp {
+		return overlayHelp(w, m.Height, full)
+	}
+	return full
 }
 
 func renderTabBar(m app.Model, w int) string {
@@ -100,7 +104,7 @@ func renderStatusBar(m app.Model, w int) string {
 	switch m.Timer.Phase {
 	case state.PhaseIdle:
 		stateStr = stateStyle.Foreground(theme.FGSecondary).Render(" ○ IDLE ")
-		hints = "│ Enter:focus  b:break  i:intention  c:category  q:quit"
+		hints = "│ Enter:focus  b:break  i:intention  c:category  q:quit  ?:help"
 	case state.PhaseFocus:
 		stateStr = stateStyle.Foreground(theme.FocusAccent).Render(
 			fmt.Sprintf(" ⏱ %s FOCUS ", m.Timer.DisplayTime()))
@@ -714,6 +718,74 @@ func overlaySessionPost(m app.Model, w, h int) string {
 		Padding(1, 3).
 		Render(content)
 	return lipgloss.Place(w, h-4, lipgloss.Center, lipgloss.Center, box)
+}
+
+func overlayHelp(w, h int, behind string) string {
+	boxW := 52
+	if boxW > w-4 {
+		boxW = w - 4
+	}
+
+	kw := boxW - 10 // inner content width
+	bold := func(s string) string {
+		return lipgloss.NewStyle().Foreground(theme.Accent).Bold(true).Render(s)
+	}
+	sec := func(s string) string {
+		return lipgloss.NewStyle().Foreground(theme.FGSecondary).Bold(true).Render(s)
+	}
+	row := func(key, action string) string {
+		keyW := 18
+		keyStr := lipgloss.NewStyle().Foreground(theme.FG).Bold(true).Render(padRight(key, keyW))
+		actStr := lipgloss.NewStyle().Foreground(theme.FGSecondary).Render(action)
+		_ = kw
+		return keyStr + actStr
+	}
+
+	lines := []string{
+		bold("Keybindings"),
+		"",
+		sec("Global"),
+		row("1-4 / Tab", "switch tabs"),
+		row("?", "toggle this help"),
+		row("q", "quit (when idle)"),
+		row("Ctrl+C", "force quit"),
+		"",
+		sec("Timer — Idle"),
+		row("Enter", "start focus"),
+		row("b / B", "short / long break"),
+		row("i", "set intention"),
+		row("c", "pick category"),
+		row("+/- or >/<", "duration ±5 / ±1 min"),
+		"",
+		sec("Timer — Focus"),
+		row("Space", "pause / resume"),
+		row("f", "finish session"),
+		row("b", "finish + start break"),
+		row("x", "abandon session"),
+		"",
+		sec("Timer — Overflow"),
+		row("f", "finish (enter notes)"),
+		row("b", "finish + start break"),
+		row("Space", "pause / resume"),
+		row("x", "abandon"),
+		"",
+		sec("Break"),
+		row("Enter / f", "end break"),
+		"",
+		sec("History"),
+		row("j / k  or  ↑ / ↓", "scroll"),
+		"",
+		lipgloss.NewStyle().Foreground(theme.FGSecondary).Render("Esc or ? to close"),
+	}
+
+	content := strings.Join(lines, "\n")
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(theme.Accent).
+		Width(boxW).
+		Padding(1, 3).
+		Render(content)
+	return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, box)
 }
 
 // Helpers
