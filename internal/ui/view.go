@@ -115,18 +115,23 @@ func renderTimer(m app.Model, w int) string {
 	// Clock circle
 	sections = append(sections, renderClock(m, w))
 
-	// Intention & category
-	if m.Intention != "" || m.Timer.IsActive() {
-		intentText := m.Intention
-		if intentText == "" {
-			intentText = "(no intention set)"
-		}
-		intentLine := lipgloss.NewStyle().Foreground(theme.Accent).Render("▸ ") +
-			lipgloss.NewStyle().Foreground(theme.FG).Render(intentText)
-		sections = append(sections, center(intentLine, w))
+	// Intention & category — shown when set or timer is active
+	if m.Intention != "" {
+		intentBox := lipgloss.NewStyle().
+			Border(lipgloss.NormalBorder(), false, false, false, true).
+			BorderForeground(theme.Accent).
+			Padding(0, 1).
+			Foreground(theme.FG).
+			Bold(true).
+			Render("▸ " + m.Intention)
+		sections = append(sections, center(intentBox, w))
+	} else if m.Timer.IsActive() {
+		noIntent := lipgloss.NewStyle().Foreground(theme.FGSecondary).Render("(no intention set)")
+		sections = append(sections, center(noIntent, w))
 	}
 	if cat := m.SelectedCategory(); cat != nil {
-		catLine := lipgloss.NewStyle().Foreground(hexColor(cat.HexColor)).Render(cat.Title)
+		dot := lipgloss.NewStyle().Foreground(hexColor(cat.HexColor)).Render("● ")
+		catLine := dot + lipgloss.NewStyle().Foreground(theme.FGSecondary).Render(cat.Title)
 		sections = append(sections, center(catLine, w))
 	}
 
@@ -443,55 +448,99 @@ func renderSettings(m app.Model, w int) string {
 }
 
 func overlayIntention(m app.Model, w, h int) string {
-	boxW := 50
+	boxW := 52
 	if boxW > w-4 {
 		boxW = w - 4
 	}
-	style := lipgloss.NewStyle().
+
+	// Input field with underline-style border
+	inputInnerW := boxW - 8 // account for outer padding + prompt chars
+	inputStyle := lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder(), false, false, true, false).
+		BorderForeground(theme.BorderFocus).
+		Width(inputInnerW)
+	inputText := lipgloss.NewStyle().Foreground(theme.Accent).Render("> ") +
+		lipgloss.NewStyle().Foreground(theme.FG).Render(m.Intention) +
+		lipgloss.NewStyle().Background(theme.Accent).Foreground(theme.BG).Render(" ")
+	inputField := inputStyle.Render(inputText)
+
+	content := lipgloss.NewStyle().Foreground(theme.FG).Bold(true).Render("What are you working on?") +
+		"\n\n" + inputField + "\n\n" +
+		lipgloss.NewStyle().Foreground(theme.FGSecondary).Render("Enter ↵ confirm   Esc cancel")
+
+	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(theme.BorderFocus).
 		Width(boxW).
-		Padding(1, 2)
-
-	input := lipgloss.NewStyle().Foreground(theme.Accent).Render("> ") +
-		lipgloss.NewStyle().Foreground(theme.FG).Render(m.Intention) +
-		lipgloss.NewStyle().Foreground(theme.Accent).Render("█")
-
-	content := lipgloss.NewStyle().Foreground(theme.FG).Bold(true).Render("What are you working on?") +
-		"\n\n" + input + "\n\n" +
-		lipgloss.NewStyle().Foreground(theme.FGSecondary).Render("Enter:confirm  Esc:cancel")
-
-	box := style.Render(content)
-	return lipgloss.Place(w, h-6, lipgloss.Center, lipgloss.Center, box)
+		Padding(1, 3).
+		Render(content)
+	return lipgloss.Place(w, h-4, lipgloss.Center, lipgloss.Center, box)
 }
 
 func overlayCategory(m app.Model, w, h int) string {
-	boxW := 40
+	const maxVisible = app.CatMaxVisible
+	boxW := 44
 	if boxW > w-4 {
 		boxW = w - 4
 	}
-	style := lipgloss.NewStyle().
+	rowW := boxW - 4 // inner width after padding
+
+	start := m.CatScrollOffset
+	end := start + maxVisible
+	if end > len(m.Categories) {
+		end = len(m.Categories)
+	}
+
+	var lines []string
+
+	// Scroll-up indicator
+	if start > 0 {
+		lines = append(lines, lipgloss.NewStyle().Foreground(theme.FGSecondary).
+			Width(rowW).Align(lipgloss.Center).Render("↑ more"))
+	}
+
+	for i := start; i < end; i++ {
+		cat := m.Categories[i]
+		dot := lipgloss.NewStyle().Foreground(hexColor(cat.HexColor)).Render("● ")
+		if i == m.CatIdx {
+			row := lipgloss.NewStyle().
+				Background(theme.BGSecondary).
+				Foreground(theme.FG).
+				Bold(true).
+				Width(rowW).
+				Render(dot + cat.Title)
+			lines = append(lines, row)
+		} else {
+			row := lipgloss.NewStyle().
+				Foreground(theme.FGSecondary).
+				Width(rowW).
+				Render(dot + cat.Title)
+			lines = append(lines, row)
+		}
+	}
+
+	// Scroll-down indicator
+	if end < len(m.Categories) {
+		lines = append(lines, lipgloss.NewStyle().Foreground(theme.FGSecondary).
+			Width(rowW).Align(lipgloss.Center).Render("↓ more"))
+	}
+
+	countHint := ""
+	if len(m.Categories) > 0 {
+		countHint = fmt.Sprintf(" (%d/%d)", m.CatIdx+1, len(m.Categories))
+	}
+
+	content := lipgloss.NewStyle().Foreground(theme.FG).Bold(true).Render("Select Category"+countHint) +
+		"\n\n" + strings.Join(lines, "\n") + "\n\n" +
+		lipgloss.NewStyle().Foreground(theme.FGSecondary).Render("↑/↓ navigate   Enter ↵ confirm   Esc cancel")
+
+	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(theme.BorderFocus).
 		Width(boxW).
-		Padding(1, 2)
-
-	var lines []string
-	for i, cat := range m.Categories {
-		marker := "  "
-		if i == m.CatIdx {
-			marker = lipgloss.NewStyle().Foreground(theme.Accent).Render("> ")
-		}
-		bullet := lipgloss.NewStyle().Foreground(hexColor(cat.HexColor)).Render("● ")
-		lines = append(lines, marker+bullet+cat.Title)
-	}
-
-	content := lipgloss.NewStyle().Foreground(theme.FG).Bold(true).Render("Select Category") +
-		"\n\n" + strings.Join(lines, "\n") + "\n\n" +
-		lipgloss.NewStyle().Foreground(theme.FGSecondary).Render("↑/↓:select  Enter:confirm  Esc:cancel")
-
-	box := style.Render(content)
-	return lipgloss.Place(w, h-6, lipgloss.Center, lipgloss.Center, box)
+		Padding(1, 2).
+		Render(content)
+	return lipgloss.Place(w, h-4, lipgloss.Center, lipgloss.Center, box)
 }
 
 // Helpers

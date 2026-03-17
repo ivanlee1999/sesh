@@ -49,9 +49,12 @@ type Model struct {
 	TargetDuration time.Duration
 
 	// Intention & category
-	Intention  string
-	Categories []db.Category
-	CatIdx     int
+	Intention       string
+	IntentionDraft  string
+	Categories      []db.Category
+	CatIdx          int
+	CatIdxDraft     int
+	CatScrollOffset int
 
 	// History
 	HistorySelected int
@@ -202,12 +205,15 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 func (m Model) handleIntentionKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
+		m.Intention = m.IntentionDraft
 		m.InputMode = ModeNormal
 	case "enter":
 		m.InputMode = ModeNormal
 	case "backspace":
 		if len(m.Intention) > 0 {
-			m.Intention = m.Intention[:len(m.Intention)-1]
+			// Remove last rune (not byte) for correct unicode handling
+			runes := []rune(m.Intention)
+			m.Intention = string(runes[:len(runes)-1])
 		}
 	default:
 		if msg.Type == tea.KeyRunes {
@@ -217,20 +223,41 @@ func (m Model) handleIntentionKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	return m, nil
 }
 
+const CatMaxVisible = 8
+
 func (m Model) handleCategoryKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	switch msg.String() {
-	case "esc", "enter":
+	case "esc":
+		m.CatIdx = m.CatIdxDraft
+		m.InputMode = ModeNormal
+	case "enter":
 		m.InputMode = ModeNormal
 	case "up", "k":
 		if m.CatIdx > 0 {
 			m.CatIdx--
+			if m.CatIdx < m.CatScrollOffset {
+				m.CatScrollOffset = m.CatIdx
+			}
 		}
 	case "down", "j":
 		if m.CatIdx < len(m.Categories)-1 {
 			m.CatIdx++
+			if m.CatIdx >= m.CatScrollOffset+CatMaxVisible {
+				m.CatScrollOffset = m.CatIdx - CatMaxVisible + 1
+			}
 		}
 	}
 	return m, nil
+}
+
+func clampScrollOffset(idx, offset, total int) int {
+	if idx < offset {
+		return idx
+	}
+	if idx >= offset+CatMaxVisible {
+		return idx - CatMaxVisible + 1
+	}
+	return offset
 }
 
 func (m Model) handleTimerKey(msg tea.KeyMsg) (Model, tea.Cmd) {
@@ -245,8 +272,11 @@ func (m Model) handleTimerKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		case "B":
 			m.startBreak(state.BreakLong)
 		case "i":
+			m.IntentionDraft = m.Intention
 			m.InputMode = ModeIntention
 		case "c":
+			m.CatIdxDraft = m.CatIdx
+			m.CatScrollOffset = clampScrollOffset(m.CatIdx, m.CatScrollOffset, len(m.Categories))
 			m.InputMode = ModeCategory
 		case "+", "=":
 			m.adjustDuration(5)
