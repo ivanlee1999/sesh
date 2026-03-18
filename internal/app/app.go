@@ -86,6 +86,13 @@ type Model struct {
 	// Timeline (today's sessions for the timer tab calendar view)
 	TodayTimeline []db.SessionRecord
 
+	// Weekly calendar view
+	WeeklyView     bool
+	WeeklyTimeline []db.SessionRecord
+
+	// Timeline scroll (hours offset from default 8 AM start)
+	TimelineScrollOffset int
+
 	// Session completion
 	CompletionNotes    string
 	CompletionDuration time.Duration
@@ -96,6 +103,7 @@ type Model struct {
 
 	// Internal
 	StartedAtChrono time.Time
+	BreakStartedAt  time.Time
 	CumulativeFocus time.Duration
 	PauseAccum      time.Duration
 
@@ -124,6 +132,7 @@ func NewModel(database *db.Database, cfg config.Config) Model {
 	last7, _ := database.GetLast7DaysFocus()
 	historySessions, _ := database.GetSessions(200)
 	todayTimeline, _ := database.GetTodaySessions()
+	weeklyTimeline, _ := database.GetLast7DaysSessions()
 
 	// Find first selectable settings item (skip headers)
 	settingsStart := 0
@@ -150,6 +159,7 @@ func NewModel(database *db.Database, cfg config.Config) Model {
 		TotalFocusMins:    database.GetTotalFocusAllTime(),
 		HistorySessions:   historySessions,
 		TodayTimeline:     todayTimeline,
+		WeeklyTimeline:    weeklyTimeline,
 		DB:                database,
 		Width:             80,
 		Height:            24,
@@ -401,6 +411,18 @@ func clampScrollOffset(idx, offset, total int) int {
 
 func (m Model) handleTimerKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	key := msg.String()
+
+	// Toggle weekly/daily view (available in any phase)
+	if key == "w" {
+		m.WeeklyView = !m.WeeklyView
+		if m.WeeklyView {
+			if wt, err := m.DB.GetLast7DaysSessions(); err == nil {
+				m.WeeklyTimeline = wt
+			}
+		}
+		return m, nil
+	}
+
 	switch m.Timer.Phase {
 	case state.PhaseIdle:
 		switch key {
@@ -425,6 +447,16 @@ func (m Model) handleTimerKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			m.adjustDuration(1)
 		case "<", ",":
 			m.adjustDuration(-1)
+		case "up", "k":
+			// Scroll timeline earlier
+			if m.TimelineScrollOffset > -8 {
+				m.TimelineScrollOffset--
+			}
+		case "down", "j":
+			// Scroll timeline later
+			if m.TimelineScrollOffset < 1 {
+				m.TimelineScrollOffset++
+			}
 		}
 	case state.PhaseFocus:
 		switch key {
@@ -466,7 +498,7 @@ func (m Model) handleTimerKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	case state.PhaseBreak, state.PhaseBreakOverflow:
 		switch key {
 		case "enter", "f":
-			m.Timer = state.NewIdle()
+			m.finishBreak()
 		}
 	case state.PhaseAbandoned:
 		switch key {
@@ -521,12 +553,14 @@ func (m *Model) startBreak(bt state.BreakType) {
 	if bt == state.BreakLong {
 		dur = time.Duration(m.Config.Timer.LongBreakDuration) * time.Minute
 	}
+	now := time.Now()
+	m.BreakStartedAt = now
 	m.Timer = state.TimerState{
 		Phase:     state.PhaseBreak,
 		Remaining: dur,
 		Target:    dur,
 		BreakType: bt,
-		StartedAt: time.Now(),
+		StartedAt: now,
 	}
 }
 
@@ -603,6 +637,31 @@ func (m *Model) finishSession() tea.Cmd {
 	m.StartedAtChrono = time.Time{}
 
 	return m.calSyncCmd(rec)
+}
+
+func (m *Model) finishBreak() {
+	now := time.Now()
+	startTime := m.BreakStartedAt
+	if startTime.IsZero() {
+		startTime = m.Timer.StartedAt
+	}
+
+	actualSecs := int64(now.Sub(startTime).Seconds())
+	targetSecs := int64(m.Timer.Target.Seconds())
+
+	title := "Short Break"
+	if m.Timer.BreakType == state.BreakLong {
+		title = "Long Break"
+	}
+
+	startedStr := startTime.Format("2006-01-02T15:04:05")
+	endedStr := now.Format("2006-01-02T15:04:05")
+
+	m.DB.SaveSession(title, nil, "rest", targetSecs, actualSecs, 0, 0, startedStr, endedStr, nil)
+
+	m.refreshStats()
+	m.Timer = state.NewIdle()
+	m.BreakStartedAt = time.Time{}
 }
 
 func (m *Model) triggerSessionComplete() {
@@ -777,6 +836,9 @@ func (m *Model) refreshStats() {
 	m.TotalFocusMins = m.DB.GetTotalFocusAllTime()
 	if tl, err := m.DB.GetTodaySessions(); err == nil {
 		m.TodayTimeline = tl
+	}
+	if wt, err := m.DB.GetLast7DaysSessions(); err == nil {
+		m.WeeklyTimeline = wt
 	}
 }
 

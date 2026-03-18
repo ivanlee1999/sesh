@@ -12,6 +12,7 @@ type Theme struct {
 	FocusAccent          lipgloss.Color
 	OverflowAccent       lipgloss.Color
 	BreakAccent          lipgloss.Color
+	LongBreakAccent      lipgloss.Color
 	PausedFG             lipgloss.Color
 	ProgressEmpty        lipgloss.Color
 	StatusBarBG          lipgloss.Color
@@ -30,6 +31,7 @@ func DarkTheme() Theme {
 		FocusAccent:    lipgloss.Color("#98C379"),
 		OverflowAccent: lipgloss.Color("#E5C07B"),
 		BreakAccent:    lipgloss.Color("#61AFEF"),
+		LongBreakAccent: lipgloss.Color("#C678DD"),
 		PausedFG:       lipgloss.Color("#C678DD"),
 		ProgressEmpty:  lipgloss.Color("#45475A"),
 		StatusBarBG:    lipgloss.Color("#181825"),

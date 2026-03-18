@@ -170,6 +170,17 @@ func renderStatusBar(m app.Model, w int) string {
 }
 
 func renderTimer(m app.Model, w int) string {
+	// Weekly calendar view takes over the full content area
+	if m.WeeklyView {
+		tabH := 2
+		statusH := 2
+		contentH := m.Height - tabH - statusH
+		if contentH < 6 {
+			contentH = 6
+		}
+		return renderWeeklyCalendar(m, w, contentH)
+	}
+
 	const minTotalForTimeline = 80
 	const timelineW = 30
 
@@ -269,53 +280,86 @@ func renderTimer(m app.Model, w int) string {
 	return result
 }
 
-// renderTimeline renders a vertical day-planner view of today's focus sessions.
+// sessionFillChar returns the fill character for a session type.
+func sessionFillChar(sessionType string, isActive bool) string {
+	if isActive {
+		return "▓"
+	}
+	switch sessionType {
+	case "rest":
+		return "░"
+	default:
+		return "█"
+	}
+}
+
+// sessionColor returns the color for a session based on its type and category.
+func sessionColor(sessionType, title string, categoryColor *string) string {
+	switch sessionType {
+	case "rest":
+		if strings.Contains(title, "Long") {
+			return string(theme.LongBreakAccent)
+		}
+		return string(theme.BreakAccent)
+	default:
+		if categoryColor != nil {
+			return *categoryColor
+		}
+		return string(theme.FocusAccent)
+	}
+}
+
+// sessionTitle returns the display title for a session.
+func sessionTitle(title, sessionType string) string {
+	if title != "" {
+		return title
+	}
+	if sessionType == "rest" {
+		return "(break)"
+	}
+	return "(focus)"
+}
+
+// formatHourLabel formats an hour (0-23) as "HH AM/PM".
+func formatHourLabel(hr int) string {
+	if hr == 0 {
+		return "12 AM"
+	} else if hr < 12 {
+		return fmt.Sprintf("%2d AM", hr)
+	} else if hr == 12 {
+		return "12 PM"
+	}
+	return fmt.Sprintf("%2d PM", hr-12)
+}
+
+// renderTimeline renders a vertical day-planner view of today's sessions.
 func renderTimeline(m app.Model, w int, h int) string {
 	now := time.Now()
 
-	// Determine time range
-	startHour := 6
-	endHour := now.Hour() + 2
-	if endHour > 24 {
-		endHour = 24
-	}
-
-	// Adjust range based on actual sessions
-	for _, s := range m.TodayTimeline {
-		if t, err := time.ParseInLocation("2006-01-02T15:04:05", s.StartedAt, time.Local); err == nil {
-			if t.Hour() < startHour {
-				startHour = t.Hour()
-			}
-		}
-		if t, err := time.ParseInLocation("2006-01-02T15:04:05", s.EndedAt, time.Local); err == nil {
-			eh := t.Hour() + 1
-			if eh > endHour {
-				endHour = eh
-			}
-		}
-	}
-	// Also account for active session
-	if !m.StartedAtChrono.IsZero() && m.Timer.IsActive() {
-		if m.StartedAtChrono.Hour() < startHour {
-			startHour = m.StartedAtChrono.Hour()
-		}
+	// Default time range: 8 AM to 11 PM, shifted by scroll offset
+	const windowSize = 15 // hours visible
+	startHour := 8 + m.TimelineScrollOffset
+	endHour := startHour + windowSize
+	if startHour < 0 {
+		startHour = 0
+		endHour = windowSize
 	}
 	if endHour > 24 {
 		endHour = 24
+		startHour = endHour - windowSize
 	}
-	if endHour <= startHour {
-		endHour = startHour + 1
+	if startHour < 0 {
+		startHour = 0
 	}
 
 	totalMinutes := (endHour - startHour) * 60
 
 	// Layout constants
-	// Inner width after left border character
-	innerW := w - 3 // 1 border left + 1 space + content + 1 space right
+	innerW := w - 3
 	if innerW < 10 {
 		innerW = 10
 	}
-	labelW := 6 // " 8 AM " or " 14:00"
+	labelW := 6
 	blockW := innerW - labelW - 1
 	if blockW < 4 {
 		blockW = 4
@@ -323,15 +367,18 @@ func renderTimeline(m app.Model, w int, h int) string {
 
 	// Title row
 	titleStyle := lipgloss.NewStyle().Foreground(theme.FG).Bold(true)
-	title := titleStyle.Render("Today")
+	scrollHint := ""
+	if m.TimelineScrollOffset != 0 {
+		scrollHint = lipgloss.NewStyle().Foreground(theme.FGSecondary).Render(
+			fmt.Sprintf(" %d–%d", startHour, endHour))
+	}
+	title := titleStyle.Render("Today") + scrollHint
 
-	// Usable rows for the timeline content
-	usableRows := h - 2 // 1 title + 1 spacing
+	usableRows := h - 2
 	if usableRows < 4 {
 		usableRows = 4
 	}
 
-	// Map time to row
 	timeToRow := func(t time.Time) int {
 		mins := (t.Hour()-startHour)*60 + t.Minute()
 		if mins < 0 {
@@ -344,12 +391,11 @@ func renderTimeline(m app.Model, w int, h int) string {
 		return row
 	}
 
-	// Initialize row buffers
 	type rowData struct {
-		label     string // hour label
-		block     string // block content (styled)
-		hasBlock  bool
-		isNowRow  bool
+		label    string
+		block    string
+		hasBlock bool
+		isNowRow bool
 	}
 	rows := make([]rowData, usableRows)
 
@@ -358,27 +404,19 @@ func renderTimeline(m app.Model, w int, h int) string {
 		t := time.Date(now.Year(), now.Month(), now.Day(), hr, 0, 0, 0, time.Local)
 		row := timeToRow(t)
 		if row < usableRows {
-			var label string
-			if hr == 0 {
-				label = "12 AM"
-			} else if hr < 12 {
-				label = fmt.Sprintf("%2d AM", hr)
-			} else if hr == 12 {
-				label = "12 PM"
-			} else {
-				label = fmt.Sprintf("%2d PM", hr-12)
-			}
-			rows[row].label = label
+			rows[row].label = formatHourLabel(hr)
 		}
 	}
 
 	// Place "now" marker
-	nowRow := timeToRow(now)
-	if nowRow < usableRows {
-		rows[nowRow].isNowRow = true
+	if now.Hour() >= startHour && now.Hour() < endHour {
+		nowRow := timeToRow(now)
+		if nowRow < usableRows {
+			rows[nowRow].isNowRow = true
+		}
 	}
 
-	// Place completed session blocks
+	// Style helpers
 	blockStyle := func(color string) lipgloss.Style {
 		c := hexColor(color)
 		return lipgloss.NewStyle().Foreground(theme.BG).Background(c)
@@ -389,11 +427,11 @@ func renderTimeline(m app.Model, w int, h int) string {
 	}
 
 	type sessionBlock struct {
-		startRow  int
-		endRow    int
-		color     string
-		title     string
-		isActive  bool
+		startRow int
+		endRow   int
+		color    string
+		title    string
+		fillChar string
 	}
 
 	var blocks []sessionBlock
@@ -407,20 +445,15 @@ func renderTimeline(m app.Model, w int, h int) string {
 		sr := timeToRow(st)
 		er := timeToRow(et)
 		if er <= sr {
-			er = sr // at least 1 row
+			er = sr
 		}
-		color := "#98C379" // default FocusAccent
-		if s.CategoryColor != nil {
-			color = *s.CategoryColor
-		}
-		title := s.Title
-		if title == "" {
-			title = "(focus)"
-		}
-		blocks = append(blocks, sessionBlock{sr, er, color, title, false})
+		color := sessionColor(s.SessionType, s.Title, s.CategoryColor)
+		title := sessionTitle(s.Title, s.SessionType)
+		fill := sessionFillChar(s.SessionType, false)
+		blocks = append(blocks, sessionBlock{sr, er, color, title, fill})
 	}
 
-	// Active session block
+	// Active focus session block
 	if !m.StartedAtChrono.IsZero() && m.Timer.IsActive() &&
 		m.Timer.Phase != state.PhaseAbandoned &&
 		m.Timer.Phase != state.PhaseBreak &&
@@ -430,7 +463,7 @@ func renderTimeline(m app.Model, w int, h int) string {
 		if er <= sr {
 			er = sr
 		}
-		color := "#98C379"
+		color := string(theme.FocusAccent)
 		if cat := m.SelectedCategory(); cat != nil {
 			color = cat.HexColor
 		}
@@ -438,27 +471,40 @@ func renderTimeline(m app.Model, w int, h int) string {
 		if title == "" {
 			title = "(focusing...)"
 		}
-		blocks = append(blocks, sessionBlock{sr, er, color, title, true})
+		blocks = append(blocks, sessionBlock{sr, er, color, title, "▓"})
+	}
+
+	// Active break session block
+	if !m.BreakStartedAt.IsZero() &&
+		(m.Timer.Phase == state.PhaseBreak || m.Timer.Phase == state.PhaseBreakOverflow) {
+		sr := timeToRow(m.BreakStartedAt)
+		er := timeToRow(now)
+		if er <= sr {
+			er = sr
+		}
+		color := string(theme.BreakAccent)
+		title := "(short break...)"
+		fill := "░"
+		if m.Timer.BreakType == state.BreakLong {
+			color = string(theme.LongBreakAccent)
+			title = "(long break...)"
+		}
+		blocks = append(blocks, sessionBlock{sr, er, color, title, fill})
 	}
 
 	// Render blocks into rows
 	for _, b := range blocks {
 		for row := b.startRow; row <= b.endRow && row < usableRows; row++ {
-			fillChar := "█"
-			if b.isActive {
-				fillChar = "▓"
-			}
-			// First row of block gets the title
 			if row == b.startRow {
 				titleStr := truncate(b.title, blockW-2)
 				styled := blockStyle(b.color).Render(" " + titleStr + " ")
 				visW := lipgloss.Width(styled)
 				if visW < blockW {
-					styled += accentBlockStyle(b.color).Render(strings.Repeat(fillChar, blockW-visW))
+					styled += accentBlockStyle(b.color).Render(strings.Repeat(b.fillChar, blockW-visW))
 				}
 				rows[row].block = styled
 			} else {
-				rows[row].block = accentBlockStyle(b.color).Render(strings.Repeat(fillChar, blockW))
+				rows[row].block = accentBlockStyle(b.color).Render(strings.Repeat(b.fillChar, blockW))
 			}
 			rows[row].hasBlock = true
 		}
@@ -475,7 +521,6 @@ func renderTimeline(m app.Model, w int, h int) string {
 	for i := 0; i < usableRows; i++ {
 		r := rows[i]
 
-		// Label column
 		label := r.label
 		if label == "" {
 			label = "     "
@@ -483,10 +528,8 @@ func renderTimeline(m app.Model, w int, h int) string {
 			label = muted.Render(fmt.Sprintf("%-5s", label))
 		}
 
-		// Separator
 		sep := muted.Render("│")
 
-		// Block column
 		var block string
 		if r.isNowRow && !r.hasBlock {
 			nowLabel := nowStyle.Render("◂now")
@@ -508,7 +551,15 @@ func renderTimeline(m app.Model, w int, h int) string {
 		lines = append(lines, " "+label+sep+block)
 	}
 
-	// Wrap in a left-border panel
+	// Scroll indicators
+	if startHour > 0 {
+		lines[1] = " " + muted.Render("  ↑  ") + muted.Render("│") + muted.Render(" scroll up (k/↑)")
+	}
+	if endHour < 24 {
+		lastIdx := len(lines) - 1
+		lines[lastIdx] = " " + muted.Render("  ↓  ") + muted.Render("│") + muted.Render(" scroll down (j/↓)")
+	}
+
 	content := strings.Join(lines, "\n")
 	panel := lipgloss.NewStyle().
 		Border(lipgloss.NormalBorder(), false, false, false, true).
@@ -519,6 +570,267 @@ func renderTimeline(m app.Model, w int, h int) string {
 		Render(content)
 
 	return panel
+}
+
+// renderWeeklyCalendar renders a 7-day calendar grid view.
+func renderWeeklyCalendar(m app.Model, w int, h int) string {
+	now := time.Now()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
+
+	// 7 days: today-6 through today
+	days := make([]time.Time, 7)
+	for i := 0; i < 7; i++ {
+		days[i] = today.AddDate(0, 0, i-6)
+	}
+
+	// Time range (same as daily timeline defaults)
+	startHour := 8 + m.TimelineScrollOffset
+	endHour := startHour + 15
+	if startHour < 0 {
+		startHour = 0
+		endHour = 15
+	}
+	if endHour > 24 {
+		endHour = 24
+		startHour = endHour - 15
+	}
+	if startHour < 0 {
+		startHour = 0
+	}
+
+	// Layout
+	labelW := 7 // "  8 AM "
+	sepW := 1
+	availW := w - labelW - sepW - 2
+	if availW < 14 {
+		availW = 14
+	}
+	colW := availW / 7
+	if colW < 2 {
+		colW = 2
+	}
+
+	// Usable rows for hours (reserve: title + header + divider + summary + bottom divider = 5)
+	usableRows := h - 5
+	if usableRows < 4 {
+		usableRows = 4
+	}
+
+	totalMinutes := (endHour - startHour) * 60
+
+	timeToRow := func(hour, minute int) int {
+		mins := (hour-startHour)*60 + minute
+		if mins < 0 {
+			return 0
+		}
+		row := mins * usableRows / totalMinutes
+		if row >= usableRows {
+			row = usableRows - 1
+		}
+		return row
+	}
+
+	// Group sessions by day index (0-6)
+	type daySession struct {
+		startHour, startMin int
+		endHour, endMin     int
+		sessionType         string
+		title               string
+		categoryColor       *string
+	}
+	daySessions := make([][]daySession, 7)
+	dayFocusSecs := make([]int64, 7) // total focus seconds per day
+
+	for _, s := range m.WeeklyTimeline {
+		st, err1 := time.ParseInLocation("2006-01-02T15:04:05", s.StartedAt, time.Local)
+		if err1 != nil {
+			continue
+		}
+		sessionDay := time.Date(st.Year(), st.Month(), st.Day(), 0, 0, 0, 0, time.Local)
+		dayIdx := -1
+		for i, d := range days {
+			if sessionDay.Equal(d) {
+				dayIdx = i
+				break
+			}
+		}
+		if dayIdx < 0 {
+			continue
+		}
+
+		et, err2 := time.ParseInLocation("2006-01-02T15:04:05", s.EndedAt, time.Local)
+		if err2 != nil {
+			continue
+		}
+
+		daySessions[dayIdx] = append(daySessions[dayIdx], daySession{
+			startHour: st.Hour(), startMin: st.Minute(),
+			endHour: et.Hour(), endMin: et.Minute(),
+			sessionType: s.SessionType, title: s.Title,
+			categoryColor: s.CategoryColor,
+		})
+
+		if s.SessionType == "full_focus" || s.SessionType == "partial_focus" {
+			dayFocusSecs[dayIdx] += s.ActualSeconds - s.PauseSeconds
+		}
+	}
+
+	// Build grid: rows[row][col] = color/fill info
+	type cell struct {
+		filled   bool
+		fillChar string
+		color    string
+	}
+	grid := make([][]cell, usableRows)
+	for i := range grid {
+		grid[i] = make([]cell, 7)
+	}
+
+	for dayIdx := 0; dayIdx < 7; dayIdx++ {
+		for _, s := range daySessions[dayIdx] {
+			sr := timeToRow(s.startHour, s.startMin)
+			er := timeToRow(s.endHour, s.endMin)
+			if er <= sr {
+				er = sr
+			}
+			color := sessionColor(s.sessionType, s.title, s.categoryColor)
+			fill := sessionFillChar(s.sessionType, false)
+			for row := sr; row <= er && row < usableRows; row++ {
+				grid[row][dayIdx] = cell{true, fill, color}
+			}
+		}
+	}
+
+	// Mark active session in today's column (dayIdx=6)
+	if !m.StartedAtChrono.IsZero() && m.Timer.IsActive() &&
+		m.Timer.Phase != state.PhaseAbandoned &&
+		m.Timer.Phase != state.PhaseBreak &&
+		m.Timer.Phase != state.PhaseBreakOverflow {
+		sr := timeToRow(m.StartedAtChrono.Hour(), m.StartedAtChrono.Minute())
+		er := timeToRow(now.Hour(), now.Minute())
+		if er <= sr {
+			er = sr
+		}
+		color := string(theme.FocusAccent)
+		if cat := m.SelectedCategory(); cat != nil {
+			color = cat.HexColor
+		}
+		for row := sr; row <= er && row < usableRows; row++ {
+			grid[row][6] = cell{true, "▓", color}
+		}
+	}
+	if !m.BreakStartedAt.IsZero() &&
+		(m.Timer.Phase == state.PhaseBreak || m.Timer.Phase == state.PhaseBreakOverflow) {
+		sr := timeToRow(m.BreakStartedAt.Hour(), m.BreakStartedAt.Minute())
+		er := timeToRow(now.Hour(), now.Minute())
+		if er <= sr {
+			er = sr
+		}
+		color := string(theme.BreakAccent)
+		fill := "░"
+		if m.Timer.BreakType == state.BreakLong {
+			color = string(theme.LongBreakAccent)
+		}
+		for row := sr; row <= er && row < usableRows; row++ {
+			grid[row][6] = cell{true, fill, color}
+		}
+	}
+
+	// Render
+	muted := lipgloss.NewStyle().Foreground(theme.FGSecondary)
+	bold := lipgloss.NewStyle().Foreground(theme.FG).Bold(true)
+	nowStyle := lipgloss.NewStyle().Foreground(theme.Accent).Bold(true)
+
+	var lines []string
+
+	// Title
+	titleLine := bold.Render("  Last 7 Days") + "  " + muted.Render("[w] daily view")
+	lines = append(lines, titleLine)
+
+	// Day headers
+	headerLine := strings.Repeat(" ", labelW+sepW)
+	for i, d := range days {
+		dayStr := d.Format("Mon 02")
+		if d.Equal(today) {
+			dayStr = nowStyle.Render(padCenter(dayStr, colW))
+		} else {
+			dayStr = muted.Render(padCenter(dayStr, colW))
+		}
+		headerLine += dayStr
+		if i < 6 {
+			headerLine += " "
+		}
+	}
+	lines = append(lines, headerLine)
+
+	// Hour rows
+	for row := 0; row < usableRows; row++ {
+		// Determine hour label for this row
+		label := ""
+		for hr := startHour; hr < endHour; hr++ {
+			r := timeToRow(hr, 0)
+			if r == row {
+				label = formatHourLabel(hr)
+				break
+			}
+		}
+
+		var labelStr string
+		if label != "" {
+			labelStr = muted.Render(fmt.Sprintf("%6s", label))
+		} else {
+			labelStr = "      "
+		}
+
+		sep := muted.Render("│")
+		rowStr := labelStr + sep
+
+		for col := 0; col < 7; col++ {
+			c := grid[row][col]
+			if c.filled {
+				rowStr += lipgloss.NewStyle().Foreground(hexColor(c.color)).
+					Render(strings.Repeat(c.fillChar, colW))
+			} else {
+				// Show now marker for today column
+				isNowRow := col == 6 && now.Hour() >= startHour && now.Hour() < endHour &&
+					timeToRow(now.Hour(), now.Minute()) == row
+				if isNowRow {
+					marker := nowStyle.Render(strings.Repeat("─", colW))
+					rowStr += marker
+				} else {
+					rowStr += strings.Repeat(" ", colW)
+				}
+			}
+			if col < 6 {
+				rowStr += " "
+			}
+		}
+
+		lines = append(lines, rowStr)
+	}
+
+	// Divider
+	divider := muted.Render(strings.Repeat("─", w-2))
+	lines = append(lines, divider)
+
+	// Summary row: total focus per day
+	summaryLine := muted.Render(fmt.Sprintf("%6s", "Total")) + muted.Render("│")
+	for i := 0; i < 7; i++ {
+		mins := float64(dayFocusSecs[i]) / 60.0
+		var label string
+		if mins <= 0 {
+			label = "—"
+		} else {
+			label = app.FormatFocusTime(mins)
+		}
+		summaryLine += muted.Render(padCenter(label, colW))
+		if i < 6 {
+			summaryLine += " "
+		}
+	}
+	lines = append(lines, summaryLine)
+
+	return strings.Join(lines, "\n")
 }
 
 // renderClock draws the timer clock face surrounded by a 20-segment progress ring.
@@ -1176,6 +1488,8 @@ func overlayHelp(w, h int, behind string) string {
 		row("i", "set intention"),
 		row("c", "pick category"),
 		row("+/- or >/<", "duration ±5 / ±1 min"),
+		row("w", "toggle weekly view"),
+		row("j/k or ↑/↓", "scroll timeline"),
 		"",
 		sec("Timer — Focus"),
 		row("Space", "pause / resume"),
