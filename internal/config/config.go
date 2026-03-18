@@ -30,6 +30,7 @@ type TimerConfig struct {
 	LongBreakAfter     int  `toml:"long_break_after"`
 	AutoStartBreak     bool `toml:"auto_start_break"`
 	AutoStartFocus     bool `toml:"auto_start_focus"`
+	MinSaveDuration    int  `toml:"min_save_duration"` // seconds; 0 = always save
 }
 
 type TodoistConfig struct {
@@ -77,6 +78,7 @@ func Default() Config {
 			ShortBreakDuration: 5,
 			LongBreakDuration:  20,
 			LongBreakAfter:     100,
+			MinSaveDuration:    1500,
 		},
 		Todoist: TodoistConfig{
 			CommentOnComplete: true,
@@ -150,6 +152,7 @@ func Save(cfg Config) error {
 	writeTOMLInt(&b, "long_break_after", cfg.Timer.LongBreakAfter)
 	writeTOMLBool(&b, "auto_start_break", cfg.Timer.AutoStartBreak)
 	writeTOMLBool(&b, "auto_start_focus", cfg.Timer.AutoStartFocus)
+	writeTOMLInt(&b, "min_save_duration", cfg.Timer.MinSaveDuration)
 
 	b.WriteString("\n[notifications]\n")
 	writeTOMLBool(&b, "enabled", cfg.Notifications.Enabled)

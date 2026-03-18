@@ -89,6 +89,19 @@ func renderStatusBar(m app.Model, w int) string {
 			BorderForeground(theme.FocusAccent)
 		return bar.Render(line)
 	}
+	if m.InputMode == app.ModeConfirmSave {
+		stateStr = stateStyle.Foreground(theme.FocusAccent).Render(" ⚠ SHORT SESSION ")
+		hints = "│ y/Enter:save   n/Esc:discard"
+		hintStyle := lipgloss.NewStyle().Foreground(theme.FGSecondary)
+		line := stateStr + " " + hintStyle.Render(hints)
+		bar := lipgloss.NewStyle().
+			Width(w).
+			Background(theme.StatusBarBG).
+			BorderTop(true).
+			BorderStyle(lipgloss.NormalBorder()).
+			BorderForeground(theme.FocusAccent)
+		return bar.Render(line)
+	}
 	if m.InputMode == app.ModeSessionPost {
 		stateStr = stateStyle.Foreground(theme.FocusAccent).Render(" ✓ SAVED ")
 		hints = "│ b:break  Enter:new session  q:quit"
@@ -267,7 +280,9 @@ func renderTimer(m app.Model, w int) string {
 	}
 
 	// Overlays (always use full width w so they cover both panels)
-	if m.InputMode == app.ModeSessionComplete {
+	if m.InputMode == app.ModeConfirmSave {
+		result = overlayConfirmSave(m, w, m.Height)
+	} else if m.InputMode == app.ModeSessionComplete {
 		result = overlaySessionComplete(m, w, m.Height)
 	} else if m.InputMode == app.ModeSessionPost {
 		result = overlaySessionPost(m, w, m.Height)
@@ -1067,7 +1082,7 @@ func renderHistory(m app.Model, w int) string {
 	}
 
 	// Column widths
-	const dateW = 10
+	const dateW = 14
 	const durW = 7
 	const catW = 14
 	sepW := 2
@@ -1116,8 +1131,8 @@ func renderHistory(m app.Model, w int) string {
 		s := sessions[i]
 
 		date := ""
-		if idx := strings.Index(s.StartedAt, "T"); idx > 0 {
-			date = s.StartedAt[:idx]
+		if t, err := time.Parse("2006-01-02T15:04:05", s.StartedAt); err == nil {
+			date = t.Format("Jan 02 15:04")
 		}
 		dur := fmt.Sprintf("%d:%02d", s.ActualSeconds/60, s.ActualSeconds%60)
 
@@ -1443,6 +1458,31 @@ func overlaySessionPost(m app.Model, w, h int) string {
 		lipgloss.NewStyle().Foreground(theme.FG).Bold(true).Render("[q]") +
 		lipgloss.NewStyle().Foreground(theme.FGSecondary).Render(" Quit")
 
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(theme.FocusAccent).
+		Width(boxW).
+		Padding(1, 3).
+		Render(content)
+	return lipgloss.Place(w, h-4, lipgloss.Center, lipgloss.Center, box)
+}
+
+func overlayConfirmSave(m app.Model, w, h int) string {
+	durStr := state.FormatDuration(m.CompletionDuration)
+	boxW := 48
+	if boxW > w-4 {
+		boxW = w - 4
+	}
+	content := lipgloss.NewStyle().Foreground(theme.FocusAccent).Bold(true).Render("⚠  Short Session") +
+		"\n" +
+		lipgloss.NewStyle().Foreground(theme.FGSecondary).Render("Session was only "+durStr) +
+		"\n\n" +
+		lipgloss.NewStyle().Foreground(theme.FG).Render("Save it?") +
+		"  " +
+		lipgloss.NewStyle().Foreground(theme.FG).Bold(true).Render("[y]") +
+		lipgloss.NewStyle().Foreground(theme.FGSecondary).Render(" Yes  ") +
+		lipgloss.NewStyle().Foreground(theme.FG).Bold(true).Render("[n]") +
+		lipgloss.NewStyle().Foreground(theme.FGSecondary).Render(" No")
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(theme.FocusAccent).

@@ -61,6 +61,10 @@ func parseTOML(data []byte, cfg *Config) {
 				cfg.Timer.AutoStartBreak = val == "true"
 			case "auto_start_focus":
 				cfg.Timer.AutoStartFocus = val == "true"
+			case "min_save_duration":
+				if n, err := strconv.Atoi(val); err == nil {
+					cfg.Timer.MinSaveDuration = n
+				}
 			}
 		case "todoist":
 			switch key {

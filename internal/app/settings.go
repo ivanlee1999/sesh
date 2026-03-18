@@ -89,6 +89,11 @@ func BuildSettingsItems() []SettingItem {
 			GetBool: func(c *config.Config) bool { return c.Timer.AutoStartFocus },
 			SetBool: func(c *config.Config, v bool) { c.Timer.AutoStartFocus = v },
 		},
+		{
+			Label: "Min Save Duration", Key: "timer.min_save_duration", Kind: SettingInt, Suffix: " sec",
+			GetInt: func(c *config.Config) int { return c.Timer.MinSaveDuration },
+			SetInt: func(c *config.Config, v int) { c.Timer.MinSaveDuration = v },
+		},
 
 		// ── Notifications ──
 		{Label: "Notifications", Kind: SettingHeader},

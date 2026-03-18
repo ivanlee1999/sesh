@@ -34,6 +34,7 @@ const (
 	ModeSessionPost     // after saving: b/enter/q
 	ModeHelp            // keybinding help overlay
 	ModeSettingsEdit    // inline editing a settings value
+	ModeConfirmSave     // confirm saving a short session
 )
 
 type tickMsg time.Time
@@ -226,7 +227,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 }
 
 func (m *Model) tick() {
-	if m.InputMode == ModeSessionComplete || m.InputMode == ModeSessionPost {
+	if m.InputMode == ModeSessionComplete || m.InputMode == ModeSessionPost || m.InputMode == ModeConfirmSave {
 		return
 	}
 	d := time.Duration(m.Config.General.TickRateMs) * time.Millisecond
@@ -287,6 +288,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	}
 	if m.InputMode == ModeCategory {
 		return m.handleCategoryKey(msg)
+	}
+	if m.InputMode == ModeConfirmSave {
+		return m.handleConfirmSaveKey(msg)
 	}
 	if m.InputMode == ModeSessionComplete {
 		return m.handleSessionCompleteKey(msg)
@@ -594,6 +598,16 @@ func (m *Model) finishSession() tea.Cmd {
 		overflowSecs = 0
 	}
 
+	// Check if session is too short and needs confirmation
+	minDur := m.Config.Timer.MinSaveDuration
+	if minDur > 0 && actualSecs < int64(minDur) {
+		m.CompletionDuration = time.Duration(actualSecs) * time.Second
+		m.CompletedAt = now
+		m.CompletionNotes = ""
+		m.InputMode = ModeConfirmSave
+		return nil
+	}
+
 	sessionType := "full_focus"
 	if actualSecs < targetSecs {
 		sessionType = "partial_focus"
@@ -687,6 +701,12 @@ func (m Model) handleSessionCompleteKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.Timer = state.NewIdle()
 		m.StartedAtChrono = time.Time{}
 	case "enter":
+		minDur := m.Config.Timer.MinSaveDuration
+		actualSecs := int64(m.CompletionDuration.Seconds())
+		if minDur > 0 && actualSecs < int64(minDur) {
+			m.InputMode = ModeConfirmSave
+			return m, nil
+		}
 		cmd := m.saveCompletedSession()
 		m.InputMode = ModeSessionPost
 		return m, cmd
@@ -719,6 +739,23 @@ func (m Model) handleSessionPostKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	case "q":
 		m.Quitting = true
 		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m Model) handleConfirmSaveKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		m.Quitting = true
+		return m, tea.Quit
+	case "y", "enter":
+		cmd := m.saveCompletedSession()
+		m.InputMode = ModeSessionPost
+		return m, cmd
+	case "n", "esc":
+		m.InputMode = ModeNormal
+		m.Timer = state.NewIdle()
+		m.StartedAtChrono = time.Time{}
 	}
 	return m, nil
 }
