@@ -2,6 +2,8 @@ package ui
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -98,6 +100,32 @@ func renderStatusBar(m app.Model, w int) string {
 			BorderTop(true).
 			BorderStyle(lipgloss.NormalBorder()).
 			BorderForeground(theme.FocusAccent)
+		return bar.Render(line)
+	}
+	if m.InputMode == app.ModeSettingsEdit {
+		stateStr = stateStyle.Foreground(theme.Accent).Render(" ✎ EDITING ")
+		hints = "│ Enter:save  Esc:cancel"
+		hintStyle := lipgloss.NewStyle().Foreground(theme.FGSecondary)
+		line := stateStr + " " + hintStyle.Render(hints)
+		bar := lipgloss.NewStyle().
+			Width(w).
+			Background(theme.StatusBarBG).
+			BorderTop(true).
+			BorderStyle(lipgloss.NormalBorder()).
+			BorderForeground(theme.Accent)
+		return bar.Render(line)
+	}
+	if m.Screen == app.ScreenSettings {
+		stateStr = stateStyle.Foreground(theme.FGSecondary).Render(" ⚙ SETTINGS ")
+		hints = "│ j/k:navigate  Enter:edit  ?:help"
+		hintStyle := lipgloss.NewStyle().Foreground(theme.FGSecondary)
+		line := stateStr + " " + hintStyle.Render(hints)
+		bar := lipgloss.NewStyle().
+			Width(w).
+			Background(theme.StatusBarBG).
+			BorderTop(true).
+			BorderStyle(lipgloss.NormalBorder()).
+			BorderForeground(theme.FGSecondary)
 		return bar.Render(line)
 	}
 
@@ -826,21 +854,135 @@ func renderHistory(m app.Model, w int) string {
 }
 
 func renderSettings(m app.Model, w int) string {
-	sec := lipgloss.NewStyle().Foreground(theme.FGSecondary)
-	lines := []string{
-		"",
-		lipgloss.NewStyle().Foreground(theme.FG).Bold(true).Render("  Settings"),
-		"",
-		sec.Render(fmt.Sprintf("  Theme:              %s", m.Config.General.Theme)),
-		sec.Render(fmt.Sprintf("  Focus Duration:     %d min", m.Config.Timer.FocusDuration)),
-		sec.Render(fmt.Sprintf("  Short Break:        %d min", m.Config.Timer.ShortBreakDuration)),
-		sec.Render(fmt.Sprintf("  Long Break:         %d min", m.Config.Timer.LongBreakDuration)),
-		sec.Render(fmt.Sprintf("  Long Break After:   %d min cumulative", m.Config.Timer.LongBreakAfter)),
-		"",
-		sec.Render(fmt.Sprintf("  Config: %s", config_path())),
-		sec.Render(fmt.Sprintf("  Data:   %s", data_dir())),
+	items := app.BuildSettingsItems()
+
+	headerStyle := lipgloss.NewStyle().Foreground(theme.Accent).Bold(true)
+	labelStyle := lipgloss.NewStyle().Foreground(theme.FGSecondary)
+	valueStyle := lipgloss.NewStyle().Foreground(theme.FG)
+	cursorStyle := lipgloss.NewStyle().Foreground(theme.Accent).Bold(true)
+	editStyle := lipgloss.NewStyle().Foreground(theme.Accent).
+		Border(lipgloss.NormalBorder(), false, false, true, false).
+		BorderForeground(theme.Accent)
+
+	// Flash message
+	flashStr := ""
+	if !m.SettingsSaveFlash.IsZero() && time.Since(m.SettingsSaveFlash) < 1500*time.Millisecond {
+		flashStr = lipgloss.NewStyle().Foreground(theme.FocusAccent).Bold(true).Render("Saved!")
 	}
+
+	// Title row
+	title := lipgloss.NewStyle().Foreground(theme.FG).Bold(true).Render("  Settings")
+	if flashStr != "" {
+		pad := w - lipgloss.Width(title) - lipgloss.Width(flashStr) - 4
+		if pad < 2 {
+			pad = 2
+		}
+		title = title + strings.Repeat(" ", pad) + flashStr
+	}
+
+	var lines []string
+	lines = append(lines, "", title, "")
+
+	// Auth status message
+	if m.SettingsAuthMsg != "" {
+		lines = append(lines, lipgloss.NewStyle().Foreground(theme.FocusAccent).Render("  "+m.SettingsAuthMsg), "")
+	}
+
+	// Calculate visible window
+	visibleRows := m.Height - 8
+	if visibleRows < 5 {
+		visibleRows = 5
+	}
+
+	// Render items with scroll
+	startIdx := m.SettingsScrollOff
+	endIdx := startIdx + visibleRows
+	if endIdx > len(items) {
+		endIdx = len(items)
+	}
+
+	labelW := 24
+
+	for i := startIdx; i < endIdx; i++ {
+		item := items[i]
+
+		if item.Kind == app.SettingHeader {
+			lines = append(lines, "")
+			lines = append(lines, headerStyle.Render("  "+item.Label))
+			continue
+		}
+
+		prefix := "    "
+		if i == m.SettingsCursor {
+			prefix = cursorStyle.Render("  > ")
+		}
+
+		var valStr string
+		isEditing := m.InputMode == app.ModeSettingsEdit && m.SettingsEditIdx == i
+
+		switch item.Kind {
+		case app.SettingBool:
+			if item.GetBool(&m.Config) {
+				valStr = valueStyle.Render("[x]")
+			} else {
+				valStr = valueStyle.Render("[ ]")
+			}
+		case app.SettingInt:
+			if isEditing {
+				valStr = editStyle.Render(m.SettingsEditBuf+"▌") + labelStyle.Render(item.Suffix)
+			} else {
+				valStr = valueStyle.Render(fmt.Sprintf("%d", item.GetInt(&m.Config))) + labelStyle.Render(item.Suffix)
+			}
+		case app.SettingString:
+			if isEditing {
+				valStr = editStyle.Render(m.SettingsEditBuf + "▌")
+			} else {
+				sv := item.GetString(&m.Config)
+				if sv == "" {
+					sv = "(not set)"
+				} else if item.Sensitive {
+					sv = "••••••••"
+				}
+				valStr = valueStyle.Render(sv)
+			}
+		case app.SettingAction:
+			var status string
+			switch item.Key {
+			case "calendar.google.auth":
+				if calsyncHasToken("google") {
+					status = "✓ Authenticated"
+				} else {
+					status = "Press Enter to auth"
+				}
+			case "calendar.outlook.auth":
+				if calsyncHasToken("outlook") {
+					status = "✓ Authenticated"
+				} else {
+					status = "Press Enter to auth"
+				}
+			}
+			valStr = lipgloss.NewStyle().Foreground(theme.FocusAccent).Render(status)
+		}
+
+		label := item.Label
+		if len(label) < labelW {
+			label = label + strings.Repeat(" ", labelW-len(label))
+		}
+
+		line := prefix + labelStyle.Render(label) + valStr
+		lines = append(lines, line)
+	}
+
+	lines = append(lines, "")
+	lines = append(lines, labelStyle.Render(fmt.Sprintf("  Config: %s", config_path())))
+
 	return strings.Join(lines, "\n")
+}
+
+func calsyncHasToken(provider string) bool {
+	path := filepath.Join(data_dir(), provider+"_token.json")
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 func overlayIntention(m app.Model, w, h int) string {

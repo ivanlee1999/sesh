@@ -53,6 +53,15 @@ func (o *OutlookProvider) Authenticate() error {
 	return SaveToken(outlookProvider, token)
 }
 
+// AuthenticateQuiet runs the OAuth2 flow without printing to stdout (for TUI use).
+func (o *OutlookProvider) AuthenticateQuiet() error {
+	token, err := RunAuthFlowQuiet(o.oauthConfig())
+	if err != nil {
+		return err
+	}
+	return SaveToken(outlookProvider, token)
+}
+
 // outlookEvent represents a Microsoft Graph calendar event.
 type outlookEvent struct {
 	Subject string            `json:"subject"`

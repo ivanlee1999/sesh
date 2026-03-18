@@ -1,8 +1,11 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 )
 
 type Config struct {
@@ -122,4 +125,68 @@ func DataDir() string {
 	}
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".local", "share", "sesh")
+}
+
+// Save writes the config to the TOML file at ConfigPath().
+func Save(cfg Config) error {
+	path := ConfigPath()
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("create config dir: %w", err)
+	}
+
+	var b strings.Builder
+
+	b.WriteString("[general]\n")
+	writeTOMLString(&b, "theme", cfg.General.Theme)
+	writeTOMLBool(&b, "mouse", cfg.General.Mouse)
+	writeTOMLBool(&b, "unicode", cfg.General.Unicode)
+	writeTOMLInt(&b, "tick_rate_ms", cfg.General.TickRateMs)
+
+	b.WriteString("\n[timer]\n")
+	writeTOMLInt(&b, "focus_duration", cfg.Timer.FocusDuration)
+	writeTOMLInt(&b, "short_break_duration", cfg.Timer.ShortBreakDuration)
+	writeTOMLInt(&b, "long_break_duration", cfg.Timer.LongBreakDuration)
+	writeTOMLInt(&b, "long_break_after", cfg.Timer.LongBreakAfter)
+	writeTOMLBool(&b, "auto_start_break", cfg.Timer.AutoStartBreak)
+	writeTOMLBool(&b, "auto_start_focus", cfg.Timer.AutoStartFocus)
+
+	b.WriteString("\n[notifications]\n")
+	writeTOMLBool(&b, "enabled", cfg.Notifications.Enabled)
+	writeTOMLString(&b, "sound", cfg.Notifications.Sound)
+
+	b.WriteString("\n[todoist]\n")
+	writeTOMLString(&b, "api_token", cfg.Todoist.APIToken)
+	writeTOMLBool(&b, "comment_on_complete", cfg.Todoist.CommentOnComplete)
+
+	b.WriteString("\n[calendar]\n")
+	writeTOMLBool(&b, "enabled", cfg.Calendar.Enabled)
+	writeTOMLString(&b, "ics_path", cfg.Calendar.ICSPath)
+	writeTOMLBool(&b, "auto_export", cfg.Calendar.AutoExport)
+
+	b.WriteString("\n[calendar.google]\n")
+	writeTOMLBool(&b, "enabled", cfg.Calendar.Google.Enabled)
+	writeTOMLString(&b, "calendar_id", cfg.Calendar.Google.CalendarID)
+	writeTOMLString(&b, "client_id", cfg.Calendar.Google.ClientID)
+	writeTOMLString(&b, "client_secret", cfg.Calendar.Google.ClientSecret)
+
+	b.WriteString("\n[calendar.outlook]\n")
+	writeTOMLBool(&b, "enabled", cfg.Calendar.Outlook.Enabled)
+	writeTOMLString(&b, "calendar_id", cfg.Calendar.Outlook.CalendarID)
+	writeTOMLString(&b, "client_id", cfg.Calendar.Outlook.ClientID)
+	writeTOMLString(&b, "tenant_id", cfg.Calendar.Outlook.TenantID)
+
+	return os.WriteFile(path, []byte(b.String()), 0644)
+}
+
+func writeTOMLString(b *strings.Builder, key, val string) {
+	fmt.Fprintf(b, "%s = %q\n", key, val)
+}
+
+func writeTOMLBool(b *strings.Builder, key string, val bool) {
+	fmt.Fprintf(b, "%s = %s\n", key, strconv.FormatBool(val))
+}
+
+func writeTOMLInt(b *strings.Builder, key string, val int) {
+	fmt.Fprintf(b, "%s = %d\n", key, val)
 }

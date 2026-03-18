@@ -17,6 +17,16 @@ const callbackPort = 19876
 // RunAuthFlow performs the OAuth2 authorization code flow using a local HTTP server.
 // It prints the auth URL, waits for the callback, exchanges the code, and returns the token.
 func RunAuthFlow(oauthCfg *oauth2.Config) (*oauth2.Token, error) {
+	return runAuthFlowInternal(oauthCfg, false)
+}
+
+// RunAuthFlowQuiet performs the OAuth2 flow without printing to stdout.
+// Use this when running inside a TUI to avoid corrupting the alternate screen.
+func RunAuthFlowQuiet(oauthCfg *oauth2.Config) (*oauth2.Token, error) {
+	return runAuthFlowInternal(oauthCfg, true)
+}
+
+func runAuthFlowInternal(oauthCfg *oauth2.Config, quiet bool) (*oauth2.Token, error) {
 	// Set redirect URL
 	oauthCfg.RedirectURL = fmt.Sprintf("http://localhost:%d/callback", callbackPort)
 
@@ -51,9 +61,11 @@ func RunAuthFlow(oauthCfg *oauth2.Config) (*oauth2.Token, error) {
 	// Generate auth URL
 	authURL := oauthCfg.AuthCodeURL("sesh-auth", oauth2.AccessTypeOffline)
 
-	fmt.Println("\nOpen this URL in your browser to authorize sesh:")
-	fmt.Printf("  %s\n\n", authURL)
-	fmt.Println("Waiting for authorization...")
+	if !quiet {
+		fmt.Println("\nOpen this URL in your browser to authorize sesh:")
+		fmt.Printf("  %s\n\n", authURL)
+		fmt.Println("Waiting for authorization...")
+	}
 
 	// Try to open browser automatically
 	openBrowser(authURL)

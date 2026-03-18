@@ -46,6 +46,15 @@ func (g *GoogleProvider) Authenticate() error {
 	return SaveToken(googleProvider, token)
 }
 
+// AuthenticateQuiet runs the OAuth2 flow without printing to stdout (for TUI use).
+func (g *GoogleProvider) AuthenticateQuiet() error {
+	token, err := RunAuthFlowQuiet(g.oauthConfig())
+	if err != nil {
+		return err
+	}
+	return SaveToken(googleProvider, token)
+}
+
 // CreateEvent creates a calendar event for the given session.
 func (g *GoogleProvider) CreateEvent(session *db.SessionRecord) error {
 	token, err := LoadToken(googleProvider)
