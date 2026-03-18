@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/ivanlee1999/sesh/internal/calendar"
@@ -32,11 +33,17 @@ const (
 	ModeSessionComplete // notes input after timer hits 0
 	ModeSessionPost     // after saving: b/enter/q
 	ModeHelp            // keybinding help overlay
+	ModeSettingsEdit    // inline editing a settings value
 )
 
 type tickMsg time.Time
 type calSyncDoneMsg struct{}
 type notifyDoneMsg struct{}
+type configSavedMsg struct{ Err error }
+type authDoneMsg struct {
+	Provider string
+	Err      error
+}
 
 func tickCmd(d time.Duration) tea.Cmd {
 	return tea.Tick(d, func(t time.Time) tea.Msg {
@@ -76,6 +83,9 @@ type Model struct {
 	Last7Days      []db.DayFocus
 	TotalFocusMins float64
 
+	// Timeline (today's sessions for the timer tab calendar view)
+	TodayTimeline []db.SessionRecord
+
 	// Session completion
 	CompletionNotes    string
 	CompletionDuration time.Duration
@@ -96,6 +106,14 @@ type Model struct {
 	// Pending notification (set during tick, consumed in Update)
 	pendingNotifyTitle string
 	pendingNotifyBody  string
+
+	// Settings tab
+	SettingsCursor    int       // index in flat settings list
+	SettingsScrollOff int       // scroll offset for visible window
+	SettingsEditBuf   string    // text being edited
+	SettingsEditIdx   int       // which item is being edited (-1 = none)
+	SettingsSaveFlash time.Time // timestamp of last save (for "Saved!" flash)
+	SettingsAuthMsg   string    // auth status message
 }
 
 func NewModel(database *db.Database, cfg config.Config) Model {
@@ -105,6 +123,16 @@ func NewModel(database *db.Database, cfg config.Config) Model {
 	breakdown, _ := database.GetCategoryBreakdownToday()
 	last7, _ := database.GetLast7DaysFocus()
 	historySessions, _ := database.GetSessions(200)
+	todayTimeline, _ := database.GetTodaySessions()
+
+	// Find first selectable settings item (skip headers)
+	settingsStart := 0
+	for i, item := range BuildSettingsItems() {
+		if item.Kind != SettingHeader {
+			settingsStart = i
+			break
+		}
+	}
 
 	return Model{
 		Timer:             state.NewIdle(),
@@ -121,9 +149,12 @@ func NewModel(database *db.Database, cfg config.Config) Model {
 		Last7Days:         last7,
 		TotalFocusMins:    database.GetTotalFocusAllTime(),
 		HistorySessions:   historySessions,
+		TodayTimeline:     todayTimeline,
 		DB:                database,
 		Width:             80,
 		Height:            24,
+		SettingsCursor:    settingsStart,
+		SettingsEditIdx:   -1,
 	}
 }
 
@@ -158,6 +189,27 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 
 	case notifyDoneMsg:
 		// Notification sent in background; nothing to do.
+		return m, nil
+
+	case configSavedMsg:
+		if msg.Err == nil {
+			m.SettingsSaveFlash = time.Now()
+			// Sync timer-related derived fields when idle
+			if m.Timer.Phase == state.PhaseIdle {
+				m.FocusDurationMins = m.Config.Timer.FocusDuration
+				m.TargetDuration = time.Duration(m.Config.Timer.FocusDuration) * time.Minute
+			}
+		} else {
+			m.SettingsAuthMsg = "Save failed: " + msg.Err.Error()
+		}
+		return m, nil
+
+	case authDoneMsg:
+		if msg.Err != nil {
+			m.SettingsAuthMsg = msg.Provider + ": " + msg.Err.Error()
+		} else {
+			m.SettingsAuthMsg = msg.Provider + ": Authenticated!"
+		}
 		return m, nil
 	}
 	return m, nil
@@ -232,6 +284,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	if m.InputMode == ModeSessionPost {
 		return m.handleSessionPostKey(msg)
 	}
+	if m.InputMode == ModeSettingsEdit {
+		return m.handleSettingsEditKey(msg)
+	}
 
 	key := msg.String()
 
@@ -280,6 +335,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m.handleTimerKey(msg)
 	case ScreenHistory:
 		return m.handleHistoryKey(msg)
+	case ScreenSettings:
+		return m.handleSettingsKey(msg)
 	}
 	return m, nil
 }
@@ -718,6 +775,9 @@ func (m *Model) refreshStats() {
 		m.Last7Days = days
 	}
 	m.TotalFocusMins = m.DB.GetTotalFocusAllTime()
+	if tl, err := m.DB.GetTodaySessions(); err == nil {
+		m.TodayTimeline = tl
+	}
 }
 
 func (m *Model) refreshHistory() {
@@ -739,4 +799,138 @@ func FormatFocusTime(mins float64) string {
 		return fmt.Sprintf("%dh %dm", h, min)
 	}
 	return fmt.Sprintf("%dm", min)
+}
+
+// ── Settings key handlers ──
+
+func (m Model) handleSettingsKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	items := BuildSettingsItems()
+	n := len(items)
+
+	visibleRows := m.Height - 8
+	if visibleRows < 5 {
+		visibleRows = 5
+	}
+
+	switch msg.String() {
+	case "j", "down":
+		for next := m.SettingsCursor + 1; next < n; next++ {
+			if items[next].Kind != SettingHeader {
+				m.SettingsCursor = next
+				if m.SettingsCursor >= m.SettingsScrollOff+visibleRows {
+					m.SettingsScrollOff = m.SettingsCursor - visibleRows + 1
+				}
+				break
+			}
+		}
+	case "k", "up":
+		for prev := m.SettingsCursor - 1; prev >= 0; prev-- {
+			if items[prev].Kind != SettingHeader {
+				m.SettingsCursor = prev
+				if m.SettingsCursor < m.SettingsScrollOff {
+					m.SettingsScrollOff = m.SettingsCursor
+				}
+				break
+			}
+		}
+	case "enter":
+		if m.SettingsCursor >= 0 && m.SettingsCursor < n {
+			item := items[m.SettingsCursor]
+			switch item.Kind {
+			case SettingBool:
+				item.SetBool(&m.Config, !item.GetBool(&m.Config))
+				return m, m.saveConfigCmd()
+			case SettingInt:
+				m.SettingsEditIdx = m.SettingsCursor
+				m.SettingsEditBuf = fmt.Sprintf("%d", item.GetInt(&m.Config))
+				m.InputMode = ModeSettingsEdit
+			case SettingString:
+				m.SettingsEditIdx = m.SettingsCursor
+				m.SettingsEditBuf = item.GetString(&m.Config)
+				m.InputMode = ModeSettingsEdit
+			case SettingAction:
+				return m.handleSettingsAction(item)
+			}
+		}
+	}
+	return m, nil
+}
+
+func (m Model) handleSettingsEditKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	items := BuildSettingsItems()
+	if m.SettingsEditIdx < 0 || m.SettingsEditIdx >= len(items) {
+		m.InputMode = ModeNormal
+		m.SettingsEditIdx = -1
+		return m, nil
+	}
+	item := items[m.SettingsEditIdx]
+
+	switch msg.String() {
+	case "ctrl+c":
+		m.Quitting = true
+		return m, tea.Quit
+	case "esc":
+		m.InputMode = ModeNormal
+		m.SettingsEditIdx = -1
+	case "enter":
+		switch item.Kind {
+		case SettingInt:
+			if n, err := strconv.Atoi(m.SettingsEditBuf); err == nil && n > 0 {
+				item.SetInt(&m.Config, n)
+			}
+		case SettingString:
+			item.SetString(&m.Config, m.SettingsEditBuf)
+		}
+		m.InputMode = ModeNormal
+		m.SettingsEditIdx = -1
+		return m, m.saveConfigCmd()
+	case "backspace":
+		if len(m.SettingsEditBuf) > 0 {
+			runes := []rune(m.SettingsEditBuf)
+			m.SettingsEditBuf = string(runes[:len(runes)-1])
+		}
+	default:
+		if msg.Type == tea.KeyRunes {
+			if item.Kind == SettingInt {
+				for _, r := range msg.Runes {
+					if r >= '0' && r <= '9' {
+						m.SettingsEditBuf += string(r)
+					}
+				}
+			} else {
+				m.SettingsEditBuf += string(msg.Runes)
+			}
+		}
+	}
+	return m, nil
+}
+
+func (m Model) handleSettingsAction(item SettingItem) (Model, tea.Cmd) {
+	switch item.Key {
+	case "calendar.google.auth":
+		m.SettingsAuthMsg = "Google: Authenticating... (check browser)"
+		cfg := m.Config.Calendar.Google
+		return m, func() tea.Msg {
+			provider := calsync.NewGoogle(cfg)
+			err := provider.AuthenticateQuiet()
+			return authDoneMsg{Provider: "Google", Err: err}
+		}
+	case "calendar.outlook.auth":
+		m.SettingsAuthMsg = "Outlook: Authenticating... (check browser)"
+		cfg := m.Config.Calendar.Outlook
+		return m, func() tea.Msg {
+			provider := calsync.NewOutlook(cfg)
+			err := provider.AuthenticateQuiet()
+			return authDoneMsg{Provider: "Outlook", Err: err}
+		}
+	}
+	return m, nil
+}
+
+func (m Model) saveConfigCmd() tea.Cmd {
+	cfg := m.Config // copy
+	return func() tea.Msg {
+		err := config.Save(cfg)
+		return configSavedMsg{Err: err}
+	}
 }

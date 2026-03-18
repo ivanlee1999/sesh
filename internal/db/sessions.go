@@ -196,3 +196,35 @@ func (d *Database) GetTotalFocusAllTime() float64 {
 	).Scan(&mins)
 	return mins
 }
+
+// GetTodaySessions returns today's focus sessions ordered chronologically (ASC).
+func (d *Database) GetTodaySessions() ([]SessionRecord, error) {
+	rows, err := d.DB.Query(
+		`SELECT s.id, s.title, s.category_id, c.title, c.hex_color, s.session_type,
+		        s.target_seconds, s.actual_seconds, s.pause_seconds, s.overflow_seconds,
+		        s.started_at, s.ended_at, s.notes
+		 FROM sessions s
+		 LEFT JOIN categories c ON s.category_id = c.id
+		 WHERE s.session_type IN ('full_focus', 'partial_focus')
+		   AND date(s.started_at) = date('now', 'localtime')
+		 ORDER BY s.started_at ASC`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var sessions []SessionRecord
+	for rows.Next() {
+		var s SessionRecord
+		if err := rows.Scan(
+			&s.ID, &s.Title, &s.CategoryID, &s.CategoryTitle, &s.CategoryColor,
+			&s.SessionType, &s.TargetSeconds, &s.ActualSeconds, &s.PauseSeconds,
+			&s.OverflowSeconds, &s.StartedAt, &s.EndedAt, &s.Notes,
+		); err != nil {
+			return nil, err
+		}
+		sessions = append(sessions, s)
+	}
+	return sessions, nil
+}

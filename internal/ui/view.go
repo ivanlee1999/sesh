@@ -142,10 +142,21 @@ func renderStatusBar(m app.Model, w int) string {
 }
 
 func renderTimer(m app.Model, w int) string {
+	const minTotalForTimeline = 80
+	const timelineW = 30
+
+	showTimeline := w >= minTotalForTimeline
+
+	// Determine the width for the timer panel
+	timerW := w
+	if showTimeline {
+		timerW = w - timelineW
+	}
+
 	var sections []string
 
 	// Clock circle
-	sections = append(sections, renderClock(m, w))
+	sections = append(sections, renderClock(m, timerW))
 
 	// Intention & category — shown when set or timer is active
 	if m.Intention != "" {
@@ -156,28 +167,28 @@ func renderTimer(m app.Model, w int) string {
 			Foreground(theme.FG).
 			Bold(true).
 			Render("▸ " + m.Intention)
-		sections = append(sections, center(intentBox, w))
+		sections = append(sections, center(intentBox, timerW))
 	} else if m.Timer.IsActive() {
 		noIntent := lipgloss.NewStyle().Foreground(theme.FGSecondary).Render("(no intention set)")
-		sections = append(sections, center(noIntent, w))
+		sections = append(sections, center(noIntent, timerW))
 	}
 	if cat := m.SelectedCategory(); cat != nil {
 		dot := lipgloss.NewStyle().Foreground(hexColor(cat.HexColor)).Render("● ")
 		catLine := dot + lipgloss.NewStyle().Foreground(theme.FGSecondary).Render(cat.Title)
-		sections = append(sections, center(catLine, w))
+		sections = append(sections, center(catLine, timerW))
 	}
 
 	// Progress bar (when active)
 	if m.Timer.IsActive() && m.Timer.Phase != state.PhaseAbandoned {
 		sections = append(sections, "")
-		sections = append(sections, renderProgressBar(m, w))
+		sections = append(sections, renderProgressBar(m, timerW))
 	}
 
 	// Session info
 	info := renderSessionInfo(m)
 	if info != "" {
 		sections = append(sections, "")
-		sections = append(sections, center(info, w))
+		sections = append(sections, center(info, timerW))
 	}
 
 	// Today stats
@@ -185,7 +196,7 @@ func renderTimer(m app.Model, w int) string {
 	statsLine := lipgloss.NewStyle().Foreground(theme.FGSecondary).Render(
 		fmt.Sprintf("Today: %s focused │ %d sessions │ Streak: %d days",
 			app.FormatFocusTime(m.TodayFocusMins), m.TodaySessions, m.Streak))
-	sections = append(sections, center(statsLine, w))
+	sections = append(sections, center(statsLine, timerW))
 
 	// Idle controls
 	if m.Timer.Phase == state.PhaseIdle {
@@ -193,15 +204,30 @@ func renderTimer(m app.Model, w int) string {
 		durLine := lipgloss.NewStyle().Foreground(theme.FGSecondary).Render("Duration: ") +
 			lipgloss.NewStyle().Foreground(theme.Accent).Bold(true).Render(fmt.Sprintf("%d min", m.FocusDurationMins)) +
 			lipgloss.NewStyle().Foreground(theme.FGSecondary).Render("  (+/- to adjust)")
-		sections = append(sections, center(durLine, w))
+		sections = append(sections, center(durLine, timerW))
 		helpLine := lipgloss.NewStyle().Foreground(theme.FGSecondary).Render(
 			"[Enter] Start Focus  [b] Break  [i] Intention  [c] Category")
-		sections = append(sections, center(helpLine, w))
+		sections = append(sections, center(helpLine, timerW))
 	}
 
 	result := strings.Join(sections, "\n")
 
-	// Overlays
+	// Join with timeline if visible
+	if showTimeline {
+		// Estimate content height for the timeline panel
+		tabH := 2
+		statusH := 2
+		contentH := m.Height - tabH - statusH
+		if contentH < 6 {
+			contentH = 6
+		}
+
+		timerPanel := lipgloss.NewStyle().Width(timerW).Render(result)
+		timelinePanel := renderTimeline(m, timelineW, contentH)
+		result = lipgloss.JoinHorizontal(lipgloss.Top, timerPanel, timelinePanel)
+	}
+
+	// Overlays (always use full width w so they cover both panels)
 	if m.InputMode == app.ModeSessionComplete {
 		result = overlaySessionComplete(m, w, m.Height)
 	} else if m.InputMode == app.ModeSessionPost {
@@ -213,6 +239,258 @@ func renderTimer(m app.Model, w int) string {
 	}
 
 	return result
+}
+
+// renderTimeline renders a vertical day-planner view of today's focus sessions.
+func renderTimeline(m app.Model, w int, h int) string {
+	now := time.Now()
+
+	// Determine time range
+	startHour := 6
+	endHour := now.Hour() + 2
+	if endHour > 24 {
+		endHour = 24
+	}
+
+	// Adjust range based on actual sessions
+	for _, s := range m.TodayTimeline {
+		if t, err := time.ParseInLocation("2006-01-02T15:04:05", s.StartedAt, time.Local); err == nil {
+			if t.Hour() < startHour {
+				startHour = t.Hour()
+			}
+		}
+		if t, err := time.ParseInLocation("2006-01-02T15:04:05", s.EndedAt, time.Local); err == nil {
+			eh := t.Hour() + 1
+			if eh > endHour {
+				endHour = eh
+			}
+		}
+	}
+	// Also account for active session
+	if !m.StartedAtChrono.IsZero() && m.Timer.IsActive() {
+		if m.StartedAtChrono.Hour() < startHour {
+			startHour = m.StartedAtChrono.Hour()
+		}
+	}
+	if endHour > 24 {
+		endHour = 24
+	}
+	if endHour <= startHour {
+		endHour = startHour + 1
+	}
+
+	totalMinutes := (endHour - startHour) * 60
+
+	// Layout constants
+	// Inner width after left border character
+	innerW := w - 3 // 1 border left + 1 space + content + 1 space right
+	if innerW < 10 {
+		innerW = 10
+	}
+	labelW := 6 // " 8 AM " or " 14:00"
+	blockW := innerW - labelW - 1
+	if blockW < 4 {
+		blockW = 4
+	}
+
+	// Title row
+	titleStyle := lipgloss.NewStyle().Foreground(theme.FG).Bold(true)
+	title := titleStyle.Render("Today")
+
+	// Usable rows for the timeline content
+	usableRows := h - 2 // 1 title + 1 spacing
+	if usableRows < 4 {
+		usableRows = 4
+	}
+
+	// Map time to row
+	timeToRow := func(t time.Time) int {
+		mins := (t.Hour()-startHour)*60 + t.Minute()
+		if mins < 0 {
+			return 0
+		}
+		row := mins * usableRows / totalMinutes
+		if row >= usableRows {
+			row = usableRows - 1
+		}
+		return row
+	}
+
+	// Initialize row buffers
+	type rowData struct {
+		label     string // hour label
+		block     string // block content (styled)
+		hasBlock  bool
+		isNowRow  bool
+	}
+	rows := make([]rowData, usableRows)
+
+	// Place hour labels
+	for hr := startHour; hr < endHour; hr++ {
+		t := time.Date(now.Year(), now.Month(), now.Day(), hr, 0, 0, 0, time.Local)
+		row := timeToRow(t)
+		if row < usableRows {
+			var label string
+			if hr == 0 {
+				label = "12 AM"
+			} else if hr < 12 {
+				label = fmt.Sprintf("%2d AM", hr)
+			} else if hr == 12 {
+				label = "12 PM"
+			} else {
+				label = fmt.Sprintf("%2d PM", hr-12)
+			}
+			rows[row].label = label
+		}
+	}
+
+	// Place "now" marker
+	nowRow := timeToRow(now)
+	if nowRow < usableRows {
+		rows[nowRow].isNowRow = true
+	}
+
+	// Place completed session blocks
+	blockStyle := func(color string) lipgloss.Style {
+		c := hexColor(color)
+		return lipgloss.NewStyle().Foreground(theme.BG).Background(c)
+	}
+	accentBlockStyle := func(color string) lipgloss.Style {
+		c := hexColor(color)
+		return lipgloss.NewStyle().Foreground(c)
+	}
+
+	type sessionBlock struct {
+		startRow  int
+		endRow    int
+		color     string
+		title     string
+		isActive  bool
+	}
+
+	var blocks []sessionBlock
+
+	for _, s := range m.TodayTimeline {
+		st, err1 := time.ParseInLocation("2006-01-02T15:04:05", s.StartedAt, time.Local)
+		et, err2 := time.ParseInLocation("2006-01-02T15:04:05", s.EndedAt, time.Local)
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		sr := timeToRow(st)
+		er := timeToRow(et)
+		if er <= sr {
+			er = sr // at least 1 row
+		}
+		color := "#98C379" // default FocusAccent
+		if s.CategoryColor != nil {
+			color = *s.CategoryColor
+		}
+		title := s.Title
+		if title == "" {
+			title = "(focus)"
+		}
+		blocks = append(blocks, sessionBlock{sr, er, color, title, false})
+	}
+
+	// Active session block
+	if !m.StartedAtChrono.IsZero() && m.Timer.IsActive() &&
+		m.Timer.Phase != state.PhaseAbandoned &&
+		m.Timer.Phase != state.PhaseBreak &&
+		m.Timer.Phase != state.PhaseBreakOverflow {
+		sr := timeToRow(m.StartedAtChrono)
+		er := timeToRow(now)
+		if er <= sr {
+			er = sr
+		}
+		color := "#98C379"
+		if cat := m.SelectedCategory(); cat != nil {
+			color = cat.HexColor
+		}
+		title := m.Intention
+		if title == "" {
+			title = "(focusing...)"
+		}
+		blocks = append(blocks, sessionBlock{sr, er, color, title, true})
+	}
+
+	// Render blocks into rows
+	for _, b := range blocks {
+		for row := b.startRow; row <= b.endRow && row < usableRows; row++ {
+			fillChar := "█"
+			if b.isActive {
+				fillChar = "▓"
+			}
+			// First row of block gets the title
+			if row == b.startRow {
+				titleStr := truncate(b.title, blockW-2)
+				styled := blockStyle(b.color).Render(" " + titleStr + " ")
+				visW := lipgloss.Width(styled)
+				if visW < blockW {
+					styled += accentBlockStyle(b.color).Render(strings.Repeat(fillChar, blockW-visW))
+				}
+				rows[row].block = styled
+			} else {
+				rows[row].block = accentBlockStyle(b.color).Render(strings.Repeat(fillChar, blockW))
+			}
+			rows[row].hasBlock = true
+		}
+	}
+
+	// Build output lines
+	muted := lipgloss.NewStyle().Foreground(theme.FGSecondary)
+	nowStyle := lipgloss.NewStyle().Foreground(theme.Accent).Bold(true)
+	borderLine := lipgloss.NewStyle().Foreground(theme.Border).Render(strings.Repeat("┄", blockW))
+
+	var lines []string
+	lines = append(lines, " "+title)
+
+	for i := 0; i < usableRows; i++ {
+		r := rows[i]
+
+		// Label column
+		label := r.label
+		if label == "" {
+			label = "     "
+		} else {
+			label = muted.Render(fmt.Sprintf("%-5s", label))
+		}
+
+		// Separator
+		sep := muted.Render("│")
+
+		// Block column
+		var block string
+		if r.isNowRow && !r.hasBlock {
+			nowLabel := nowStyle.Render("◂now")
+			pad := blockW - 4
+			if pad < 0 {
+				pad = 0
+			}
+			block = nowStyle.Render(strings.Repeat("─", pad)) + nowLabel
+		} else if r.isNowRow && r.hasBlock {
+			block = r.block
+		} else if r.hasBlock {
+			block = r.block
+		} else if r.label != "" {
+			block = borderLine
+		} else {
+			block = strings.Repeat(" ", blockW)
+		}
+
+		lines = append(lines, " "+label+sep+block)
+	}
+
+	// Wrap in a left-border panel
+	content := strings.Join(lines, "\n")
+	panel := lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder(), false, false, false, true).
+		BorderForeground(theme.Border).
+		Width(w).
+		Height(h).
+		MaxHeight(h).
+		Render(content)
+
+	return panel
 }
 
 // renderClock draws the timer clock face surrounded by a 20-segment progress ring.
